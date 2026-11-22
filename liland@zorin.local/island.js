@@ -55,45 +55,65 @@ void main() {
     }
 });
 
-class GlassBackdrop {
-    constructor(radius) {
-        this.actor = new Clutter.Actor({x_expand: true, y_expand: true, reactive: false});
-        this._blur = new Clutter.Actor({reactive: false});
-        this._blur.add_effect(new Shell.BlurEffect({mode: Shell.BlurMode.BACKGROUND, radius, brightness: 1.0}));
-        this.actor.add_child(this._blur);
-        this._corners = [true, false].map(left => {
-            const corner = new Clutter.Actor({reactive: false, clip_to_allocation: true});
-            corner.add_effect(new CornerMask(left));
-            const clone = new Clutter.Clone({source: global.window_group, reactive: false});
-            corner.add_child(clone);
-            this.actor.add_child(corner);
-            return {corner, clone, left};
-        });
-        this._key = '';
+// One bottom corner: a clone of the scene (windows and wallpaper), masked
+// to the outside of the island's round corner. Laid out by GlassBackdrop.
+const GlassCorner = GObject.registerClass(
+class LilandGlassCorner extends Clutter.Actor {
+    _init(left) {
+        super._init({reactive: false, clip_to_allocation: true});
+        this.add_effect(new CornerMask(left));
+        this._clone = new Clutter.Clone({source: global.window_group, reactive: false});
+        this.add_child(this._clone);
+        this._offset = [0, 0];
     }
 
-    // The island is w x h at (x, y) on the stage, its side walls `ear` in from
-    // the edges, its bottom corners `bottom` round.
-    update(x, y, w, h, ear, bottom) {
-        const key = [x, y, w, h, ear, bottom].map(Math.round).join(',');
-        if (key === this._key)
-            return;
-        this._key = key;
-        this._blur.set_position(Math.round(ear), 0);
-        this._blur.set_size(Math.max(0, Math.round(w - 2 * ear)), Math.max(0, Math.round(h)));
-        const size = Math.round(bottom);
-        for (const {corner, clone, left} of this._corners) {
-            const cx = Math.round(left ? ear : w - ear - bottom);
-            const cy = Math.round(h - bottom);
-            corner.visible = size >= 1;
-            corner.set_position(cx, cy);
-            corner.set_size(size, size);
-            // The clone shows the scene where it is on the stage.
-            clone.set_position(-Math.round(x) - cx, -Math.round(y) - cy);
-            clone.set_size(global.stage.width, global.stage.height);
+    // Where the stage's origin is, relative to this corner.
+    setOffset(x, y) {
+        this._offset = [x, y];
+    }
+
+    vfunc_allocate(box) {
+        this.set_allocation(box);
+        const [x, y] = this._offset;
+        this._clone.allocate(Clutter.ActorBox.new(x, y, x + global.stage.width, y + global.stage.height));
+    }
+});
+
+// The glass under the island's tint. Its pieces are laid out in its own
+// allocation (no geometry set from signals): the blur between the side walls,
+// the corners where the island's round bottom corners are.
+const GlassBackdrop = GObject.registerClass(
+class LilandGlassBackdrop extends Clutter.Actor {
+    _init(island, radius) {
+        super._init({x_expand: true, y_expand: true, reactive: false});
+        this._island = island;
+        this._blur = new Clutter.Actor({reactive: false});
+        this._blur.add_effect(new Shell.BlurEffect({mode: Shell.BlurMode.BACKGROUND, radius, brightness: 1.0}));
+        this.add_child(this._blur);
+        this._corners = [true, false].map(left => {
+            const corner = new GlassCorner(left);
+            corner._left = left;
+            this.add_child(corner);
+            return corner;
+        });
+    }
+
+    vfunc_allocate(box) {
+        this.set_allocation(box);
+        const w = box.get_width();
+        const h = box.get_height();
+        const {topR: ear, botR: bottom} = this._island._shape(w, h);
+        this._blur.allocate(Clutter.ActorBox.new(ear, 0, Math.max(ear, w - ear), h));
+        // The island's place in its parent (the stage's ui group, at 0, 0).
+        const islandBox = this._island.get_allocation_box();
+        for (const corner of this._corners) {
+            const cx = corner._left ? ear : w - ear - bottom;
+            const cy = h - bottom;
+            corner.setOffset(-(islandBox.x1 + box.x1 + cx), -(islandBox.y1 + box.y1 + cy));
+            corner.allocate(Clutter.ActorBox.new(cx, cy, cx + Math.max(0, bottom), cy + Math.max(0, bottom)));
         }
     }
-}
+});
 
 // Glass tints (dark / light style).
 const GLASS = {
@@ -189,11 +209,10 @@ export const Island = GObject.registerClass({
 
         // Liquid Glass (see GlassBackdrop), under the tint, and light / dark
         // style.
-        this._glass = new GlassBackdrop(GLASS_BLUR_RADIUS);
-        this._glass.actor.visible = false;
-        this.insert_child_below(this._glass.actor, this._bg);
-        for (const prop of ['x', 'y', 'width', 'height'])
-            this.connect(`notify::${prop}`, () => this._syncGlass());
+        this._glass = new GlassBackdrop(this, GLASS_BLUR_RADIUS);
+        this._glass.visible = false;
+        this.insert_child_below(this._glass, this._bg);
+        this.connect('notify::mapped', () => this._syncGlass());
         this._interfaceSettings = new Gio.Settings({schema_id: 'org.gnome.desktop.interface'});
         this._styleIds = [
             [this._interfaceSettings, this._interfaceSettings.connect('changed::color-scheme', () => this._syncStyle())],
@@ -531,15 +550,16 @@ export const Island = GObject.registerClass({
     // paint cycle): only with glass on, the plain shape (no narrower top
     // part) and while the island is drawn (not the invisible idle one).
     _syncGlass() {
-        const {f, topR, botR} = this._shape(this.width, this.height);
+        // The size and place follow by themselves (GlassBackdrop's
+        // allocation); here only whether it's there. Not before the island
+        // is on the stage (its size would need the theme).
+        if (!this.get_stage())
+            return;
+        const {f} = this._shape(this.width, this.height);
         const shown = this._settings.get_boolean('glass-effect') && f === 0 &&
             this._bg.opacity > 0 && !(this.mode === 'idle' && !this._tray);
-        if (shown) {
-            const [x, y] = this.get_transformed_position();
-            this._glass.update(x, y, this.width, this.height, topR, botR);
-        }
-        if (this._glass.actor.visible !== shown)
-            this._glass.actor.visible = shown;
+        if (this._glass.visible !== shown)
+            this._glass.visible = shown;
     }
 
     // Light / dark style and glass on / off: restyle everything. Light only

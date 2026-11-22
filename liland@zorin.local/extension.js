@@ -12,6 +12,7 @@ import {NowPlaying} from './mpris.js';
 import {LiveLevels} from './levels.js';
 import {Island} from './island.js';
 import {releaseAppearance} from './appearance.js';
+import {ClipboardService} from './clipboard.js';
 import {OsdActivity} from './activities/osd.js';
 import {NotificationActivity} from './activities/notifications.js';
 import {TopBarTakeover} from './topbar.js';
@@ -27,6 +28,7 @@ export default class LilandExtension extends Extension {
         this._osd = new OsdActivity(this._island, this._settings);
         this._notifications = new NotificationActivity(this._island, this._settings);
         this._topBar = new TopBarTakeover(this._island, this._settings);
+        this._clipboard = new ClipboardService(this._settings);
 
         this._indicatorId = this._settings.connect('changed::show-indicator', () => this._syncIndicator());
         this._syncIndicator();
@@ -67,6 +69,7 @@ export default class LilandExtension extends Extension {
         menu.addMenuItem(this._switch(_('Volume and Brightness in the Island'), 'osd-in-island'));
         menu.addMenuItem(this._switch(_('Notifications in the Island'), 'notifications-in-island'));
         menu.addMenuItem(this._switch(_('Glass Effect'), 'glass-effect'));
+        menu.addMenuItem(this._switch(_('Clipboard in the Island'), 'clipboard-in-island'));
 
         menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         const quit = new PopupMenu.PopupMenuItem(_('Quit Liland'));
@@ -97,6 +100,8 @@ export default class LilandExtension extends Extension {
             GLib.source_remove(this._quitId);
         this._quitId = 0;
         this._settings.disconnect(this._indicatorId);
+        this._clipboard.destroy();
+        this._clipboard = null;
         // The top bar comes back (with its buttons) before anything else goes.
         this._topBar.destroy();
         this._topBar = null;
