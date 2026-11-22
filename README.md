@@ -7,6 +7,17 @@ quando tem música tocando, o centro da barra superior vira uma ilha preta com a
 passando o mouse por cima, ela abre um player com a música, o artista, a barra de progresso (dá pra arrastar) e os controles,
 incluindo aleatório e repetir quando o app informa esses modos.
 
+a ilha **substitui a barra superior**: a barra do gnome some (as janelas ganham o espaço) e a ilha fica sempre lá,
+mostrando a hora (e, com música, a capa e o equalizador ao lado dela). passando o mouse, ela abre com duas abas:
+
+- **música**: o player (ou "nada tocando", com um botão para abrir o spotify ou o último player usado).
+- **bandeja**: todos os botões que ficavam na barra (configurações rápidas, calendário e notificações, menu do zorin,
+  ícones de apps, clipboard, impressoras, outras extensões...). os menus deles abrem logo abaixo da ilha, que fica
+  aberta enquanto um menu estiver aberto. os atalhos de teclado (ex.: super+v para o calendário) abrem a ilha na bandeja.
+
+sem música tocando, a ilha abre direto na bandeja. desligando a opção **substituir a barra superior** (ou a extensão),
+a barra volta exatamente como estava.
+
 a ilha também mostra **atividades ao vivo**, como no iphone:
 
 - **volume e brilho**: ao mudar o volume ou o brilho (teclas, rolagem no ícone de som), o nível aparece numa pílula
@@ -37,15 +48,19 @@ gnome-extensions enable liland@zorin.local
 
 pra atualizar: `git pull && ./install.sh` e encerre/entre na sessão de novo.
 
-a ilha mede o espaço livre no centro da barra superior e, quando abre, só fica mais larga **abaixo** da barra,
+com a barra substituída, a pílula da hora fica no centro do topo da tela, por cima das janelas maximizadas
+(como o notch de um macbook): esse pedacinho da barra de título delas fica coberto.
+
+com a opção **substituir a barra superior** desligada, a ilha mede o espaço livre no centro da barra superior e, quando abre, só fica mais larga **abaixo** da barra,
 sem cobrir os itens ao lado (áreas de trabalho, ícones, relógio). se algum item estiver bem no centro
 (como o relógio no gnome padrão), a ilha invisível não reage ao mouse ali e o item continua clicável;
 com música tocando, a pílula compacta fica por cima dele.
 
 ## opções
 
-ficam no ícone de cápsula da barra superior:
+ficam no ícone de cápsula (na aba bandeja da ilha, ou na barra superior se ela não for substituída):
 
+- **substituir a barra superior** esconde a barra do gnome e leva tudo para a ilha (ligado por padrão).
 - **mostrar ao trocar de música** abre a ilha por alguns segundos quando a faixa muda.
 - **abrir só ao clicar** / **abrir ao passar o mouse**.
 - **equalizador acompanha a música** faz as barrinhas seguirem o som de verdade. o `levels.py` escuta a saída de áudio
@@ -64,7 +79,9 @@ pra esconder o ícone da barra: `gsettings --schemadir ~/.local/share/gnome-shel
 | arquivo | o que faz |
 | --- | --- |
 | `extension.js` | liga tudo e monta o menu da cápsula |
-| `island.js` | a ilha: forma de notch, modos idle/compacto/aberto/mensagem/atividade, animações, hover e clique |
+| `island.js` | a ilha: forma de notch, hora, abas, modos idle/compacto/aberto/mensagem/bandeja/atividade, animações, hover e clique |
+| `topbar.js` | substitui a barra: esconde a barra (sem reservar espaço), leva as caixas de botões dela para a aba bandeja e devolve tudo ao desligar |
+| `activities/music.js` | o player de música: pílula compacta, player aberto, "nada tocando", barra de progresso e equalizador |
 | `activities/osd.js` | volume/brilho na ilha (assume o `Main.osdWindowManager.show` do gnome) |
 | `activities/notifications.js` | notificações na ilha (assume o `MessageTray._showNotification` do gnome) |
 | `mpris.js` | lê todos os players MPRIS pelo D-Bus, escolhe o ativo, baixa a capa e tira a cor de destaque |

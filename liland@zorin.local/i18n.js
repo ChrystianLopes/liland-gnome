@@ -16,6 +16,7 @@ const PT = {
     'Quit Liland': 'Sair do Liland',
     'Volume and Brightness in the Island': 'Volume e brilho na ilha',
     'Notifications in the Island': 'Notificações na ilha',
+    'Replace the Top Bar': 'Substituir a barra superior',
 };
 
 const isPortuguese = GLib.get_language_names().some(l => l.startsWith('pt'));

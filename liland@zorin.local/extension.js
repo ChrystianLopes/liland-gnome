@@ -13,6 +13,7 @@ import {LiveLevels} from './levels.js';
 import {Island} from './island.js';
 import {OsdActivity} from './activities/osd.js';
 import {NotificationActivity} from './activities/notifications.js';
+import {TopBarTakeover} from './topbar.js';
 import {_} from './i18n.js';
 
 export default class LilandExtension extends Extension {
@@ -24,6 +25,7 @@ export default class LilandExtension extends Extension {
         Main.layoutManager.addTopChrome(this._island, {affectsInputRegion: true, trackFullscreen: true});
         this._osd = new OsdActivity(this._island, this._settings);
         this._notifications = new NotificationActivity(this._island, this._settings);
+        this._topBar = new TopBarTakeover(this._island, this._settings);
 
         this._indicatorId = this._settings.connect('changed::show-indicator', () => this._syncIndicator());
         this._syncIndicator();
@@ -49,6 +51,7 @@ export default class LilandExtension extends Extension {
         const menu = button.menu;
         const s = this._settings;
 
+        menu.addMenuItem(this._switch(_('Replace the Top Bar'), 'replace-top-bar'));
         menu.addMenuItem(this._switch(_('Show When the Song Changes'), 'peek-on-track-change'));
         const clickItem = new PopupMenu.PopupMenuItem('');
         const syncClick = () => {
@@ -91,6 +94,9 @@ export default class LilandExtension extends Extension {
             GLib.source_remove(this._quitId);
         this._quitId = 0;
         this._settings.disconnect(this._indicatorId);
+        // The top bar comes back (with its buttons) before anything else goes.
+        this._topBar.destroy();
+        this._topBar = null;
         this._indicator?.destroy();
         this._indicator = null;
         // Activities first: they give GNOME its OSD and banners back.
