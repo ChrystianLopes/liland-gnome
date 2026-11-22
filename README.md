@@ -26,6 +26,11 @@ gnome-extensions enable liland@zorin.local
 
 pra atualizar: `git pull && ./install.sh` e encerre/entre na sessão de novo.
 
+a ilha mede o espaço livre no centro da barra superior e, quando abre, só fica mais larga **abaixo** da barra,
+sem cobrir os itens ao lado (áreas de trabalho, ícones, relógio). se algum item estiver bem no centro
+(como o relógio no gnome padrão), a ilha invisível não reage ao mouse ali e o item continua clicável;
+com música tocando, a pílula compacta fica por cima dele.
+
 ## opções
 
 ficam no ícone de cápsula da barra superior:
@@ -34,6 +39,9 @@ ficam no ícone de cápsula da barra superior:
 - **abrir só ao clicar** / **abrir ao passar o mouse**.
 - **equalizador acompanha a música** faz as barrinhas seguirem o som de verdade. o `levels.py` escuta a saída de áudio
   (monitor do pipewire) via gstreamer, só mede na hora e não grava nada. ele só roda enquanto tem música tocando.
+  como ele escuta a **saída** de áudio (não o microfone), o stream se identifica como medidor de volume
+  (`org.gnome.VolumeControl`) para o gnome não mostrar o ícone de "microfone em uso". se preferir ver o ícone,
+  é só deixar essa opção desligada (é o padrão).
 - **sair do liland** desativa a extensão (reative com `gnome-extensions enable liland@zorin.local`).
 
 pra esconder o ícone da barra: `gsettings --schemadir ~/.local/share/gnome-shell/extensions/liland@zorin.local/schemas set org.gnome.shell.extensions.liland show-indicator false`
