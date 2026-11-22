@@ -42,3 +42,27 @@
     background-color: rgba(255,255,255,0.16);
 }
 .liland-message-button:hover { background-color: rgba(255,255,255,0.24); }
+
+.liland-osd { padding: 0 18px; spacing: 10px; }
+.liland-osd-icon { color: #ffffff; }
+.liland-osd-track { height: 4px; border-radius: 2px; background-color: rgba(255,255,255,0.18); }
+.liland-osd-fill { border-radius: 2px; background-color: #ffffff; }
+.liland-osd-name { font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.75); max-width: 90px; }
+.liland-osd-label { font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.75); min-width: 32px; text-align: right; }
+
+.liland-notif-header { padding: 0 22px; spacing: 6px; }
+.liland-notif-app-icon { color: rgba(255,255,255,0.6); }
+.liland-notif-app { font-size: 11px; font-weight: 500; color: rgba(255,255,255,0.5); }
+.liland-notif-main { padding: 0 8px; margin: 0 8px; border-radius: 14px; }
+.liland-notif-main:hover { background-color: rgba(255,255,255,0.06); }
+.liland-notif-row { spacing: 12px; }
+.liland-notif-icon { color: rgba(255,255,255,0.8); }
+.liland-notif-title { font-size: 13px; font-weight: 600; color: #ffffff; }
+.liland-notif-body { font-size: 12px; color: rgba(255,255,255,0.65); max-height: 34px; }
+.liland-notif-actions { padding: 0 16px 10px 16px; spacing: 8px; }
+.liland-notif-action {
+    font-size: 12px; font-weight: 600; color: #ffffff;
+    padding: 5px 12px; border-radius: 99px;
+    background-color: rgba(255,255,255,0.14);
+}
+.liland-notif-action:hover { background-color: rgba(255,255,255,0.24); }

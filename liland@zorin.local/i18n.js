@@ -14,6 +14,8 @@ const PT = {
     'Equalizer Follows the Music': 'Equalizador acompanha a música',
     'Show Icon in Top Bar': 'Mostrar ícone na barra superior',
     'Quit Liland': 'Sair do Liland',
+    'Volume and Brightness in the Island': 'Volume e brilho na ilha',
+    'Notifications in the Island': 'Notificações na ilha',
 };
 
 const isPortuguese = GLib.get_language_names().some(l => l.startsWith('pt'));
