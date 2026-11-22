@@ -6,6 +6,7 @@ import Clutter from 'gi://Clutter';
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
+import Meta from 'gi://Meta';
 import GnomeDesktop from 'gi://GnomeDesktop';
 import Shell from 'gi://Shell';
 import St from 'gi://St';
@@ -117,6 +118,7 @@ const RADII = {
     open: [18, 28],
     message: [16, 24],
     tray: [16, 24],
+    collapsed: [3, 3],
     // A top bar menu shown inside the island: rounder, like iOS cards.
     menu: [16, 40],
     activity: [16, 24],
@@ -124,6 +126,11 @@ const RADII = {
 // Room around a menu shown inside the island (sides and bottom).
 const MENU_SIDE_PADDING = 10;
 const MENU_BOTTOM_PADDING = 14;
+// Over a window that reaches the top (e.g. a maximized browser), the closed
+// island shrinks to a small handle and grows back on hover (like the macOS
+// menu bar that hides): no space is reserved at the top for it.
+const COLLAPSED_WIDTH = 140;
+const COLLAPSED_HEIGHT = 8;
 const OPEN_DELAY = 100;
 const CLOSE_DELAY = 150;
 const PEEK_DURATION = 3500;
@@ -280,6 +287,7 @@ export const Island = GObject.registerClass({
         case 'message': return [OPEN_WIDTH, h + MESSAGE_CONTENT_HEIGHT];
         case 'tray': return this._traySize(h);
         case 'activity': return [this._activity?.width ?? COMPACT_WIDTH, h + (this._activity?.contentHeight ?? 0)];
+        case 'collapsed': return [COLLAPSED_WIDTH, COLLAPSED_HEIGHT];
         default: return [NOTCH_WIDTH, h];
         }
     }
@@ -644,6 +652,10 @@ export const Island = GObject.registerClass({
             this._tab = 'music';
         this._holds.clear();
         this._syncStyle();
+        if (tray)
+            this._watchWindows();
+        else
+            this._unwatchWindows();
         this._panelGap = undefined;
         this._measurePanel();
         this._syncHeaderInsets();
@@ -767,6 +779,67 @@ export const Island = GObject.registerClass({
         return this._menu;
     }
 
+    // ---------- collapsing over windows ----------
+
+    // Windows that reach the top under the island make it collapse (when
+    // closed): watch whatever can move a window there.
+    _watchWindows() {
+        if (this._windowSignals)
+            return;
+        const check = () => this._later('collapse', 60, () => this._updateCollapse());
+        const display = global.display;
+        const wm = global.window_manager;
+        const workspaces = global.workspace_manager;
+        this._windowSignals = [
+            ...['restacked', 'window-created', 'grab-op-end', 'window-entered-monitor', 'window-left-monitor']
+                .map(signal => [display, display.connect(signal, check)]),
+            ...['size-changed', 'minimize', 'unminimize', 'map', 'destroy', 'switch-workspace']
+                .map(signal => [wm, wm.connect(signal, check)]),
+            [workspaces, workspaces.connect('active-workspace-changed', check)],
+        ];
+        this._updateCollapse();
+    }
+
+    _unwatchWindows() {
+        for (const [obj, id] of this._windowSignals ?? [])
+            obj.disconnect(id);
+        this._windowSignals = null;
+        this._cancel('collapse');
+        this._setCollapsed(false);
+    }
+
+    _updateCollapse() {
+        const monitor = Main.layoutManager.primaryMonitor;
+        if (!monitor || !this._tray) {
+            this._setCollapsed(false);
+            return;
+        }
+        // The island's closed area (as wide as the music pill, the widest).
+        const width = COMPACT_WIDTH;
+        const x1 = monitor.x + (monitor.width - width) / 2;
+        const x2 = x1 + width;
+        const y2 = monitor.y + this._notchHeight;
+        const workspace = global.workspace_manager.get_active_workspace();
+        const covered = global.get_window_actors().some(actor => {
+            const win = actor.meta_window;
+            if (!win || win.minimized || !win.showing_on_its_workspace() ||
+                !win.located_on_workspace(workspace) ||
+                win.get_window_type() !== Meta.WindowType.NORMAL ||
+                win.get_monitor() !== Main.layoutManager.primaryIndex)
+                return false;
+            const r = win.get_frame_rect();
+            return r.x < x2 && r.x + r.width > x1 && r.y < y2 && r.y + r.height > monitor.y;
+        });
+        this._setCollapsed(covered);
+    }
+
+    _setCollapsed(collapsed) {
+        if (this._collapsed === collapsed)
+            return;
+        this._collapsed = collapsed;
+        this._sync();
+    }
+
     // While held (e.g. a menu of a tray button is open), the open island
     // doesn't close. Released, it closes if the pointer is away.
     hold(key, held) {
@@ -857,6 +930,8 @@ export const Island = GObject.registerClass({
         }
         if (this._activity)
             return 'activity';
+        if (this._collapsed)
+            return 'collapsed';
         return hasTrack && this.nowPlaying.isPlaying ? 'compact' : 'idle';
     }
 
@@ -1122,6 +1197,9 @@ export const Island = GObject.registerClass({
         }
         for (const menu of [...this._pendingStyles.keys()])
             this.dropMenuStyle(menu);
+        for (const [obj, id] of this._windowSignals ?? [])
+            obj.disconnect(id);
+        this._windowSignals = null;
         for (const name of Object.keys(this._timeouts))
             this._cancel(name);
         this._menuAnchor.destroy();

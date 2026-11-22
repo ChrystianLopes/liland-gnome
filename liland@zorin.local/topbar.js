@@ -16,7 +16,6 @@
 // - Keyboard shortcuts (quick settings, calendar) go through
 //   Main.panel._toggleMenu(), which ignores unmapped buttons: replaced on the
 //   instance to open the island first.
-import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
 import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
@@ -96,33 +95,9 @@ export class TopBarTakeover {
         // very top: keep them below the island's top part.
         Main.messageTray.translation_y = this._island.notchHeight;
 
-        // Keep the island's strip reserved at the top, like the top bar (and
-        // the Mac menu bar) did. Without it, maximized windows reach the top
-        // of the screen; an undecorated one (a browser) then covers the whole
-        // monitor and counts as fullscreen, which hides the island and the
-        // dock, which resizes the window, which isn't fullscreen anymore...
-        // (struts count even for hidden chrome, see GNOME 46 ui/layout.js).
-        this._strut = new Clutter.Actor({reactive: false, opacity: 0});
-        layout.addChrome(this._strut, {affectsStruts: true, affectsInputRegion: false, trackFullscreen: true});
-        this._syncStrut();
-        this._monitorsId = layout.connect('monitors-changed', () => this._syncStrut());
-
         this._islandHeightId = this._island.connect('notify::height', () => {
             Main.messageTray.translation_y = this._island.notchHeight;
-            this._syncStrut();
         });
-    }
-
-    _syncStrut() {
-        const monitor = Main.layoutManager.primaryMonitor;
-        if (!this._strut || !monitor)
-            return;
-        const height = this._island.notchHeight;
-        if (this._strut.x !== monitor.x || this._strut.y !== monitor.y ||
-            this._strut.width !== monitor.width || this._strut.height !== height) {
-            this._strut.set_position(monitor.x, monitor.y);
-            this._strut.set_size(monitor.width, height);
-        }
     }
 
     _inTray(indicator) {
@@ -289,10 +264,6 @@ export class TopBarTakeover {
 
         layout.panelBox.disconnect(this._panelVisibleId);
         this._island.disconnect(this._islandHeightId);
-        layout.disconnect(this._monitorsId);
-        layout.removeChrome(this._strut);
-        this._strut.destroy();
-        this._strut = null;
         // Shown first: tracking it again with trackFullscreen hides it if a
         // fullscreen window is up.
         layout.panelBox.show();
