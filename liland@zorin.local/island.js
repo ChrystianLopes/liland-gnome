@@ -26,8 +26,13 @@ const RADII = {
     open: [18, 28],
     message: [16, 24],
     tray: [16, 24],
+    // A top bar menu shown inside the island: rounder, like iOS cards.
+    menu: [16, 40],
     activity: [16, 24],
 };
+// Room around a menu shown inside the island (sides and bottom).
+const MENU_SIDE_PADDING = 10;
+const MENU_BOTTOM_PADDING = 14;
 const OPEN_DELAY = 100;
 const CLOSE_DELAY = 150;
 const PEEK_DURATION = 3500;
@@ -97,6 +102,14 @@ export const Island = GObject.registerClass({
         ];
 
         this._buildTrayView();
+        // Invisible point under the tray's buttons: menus shown inside the
+        // island are positioned from it (see showMenu).
+        // It is placed in absolute coordinates (the island is always centered
+        // on the monitor), outside the island's layout.
+        this._menu = null;
+        this._pendingStyles = new Map();
+        this._menuAnchor = new Clutter.Actor({width: 1, height: 1, reactive: false});
+        Main.uiGroup.add_child(this._menuAnchor);
         this._buildClock();
         this._buildTabBar();
 
@@ -153,10 +166,26 @@ export const Island = GObject.registerClass({
         case 'compact': return [NOTCH_WIDTH + COMPACT_WING * 2, h];
         case 'open': return [OPEN_WIDTH, h + OPEN_CONTENT_HEIGHT];
         case 'message': return [OPEN_WIDTH, h + MESSAGE_CONTENT_HEIGHT];
-        case 'tray': return [this._trayWidth(), h + TRAY_CONTENT_HEIGHT];
+        case 'tray': return this._traySize(h);
         case 'activity': return [this._activity?.width ?? COMPACT_WIDTH, h + (this._activity?.contentHeight ?? 0)];
         default: return [NOTCH_WIDTH, h];
         }
+    }
+
+    // The tray tab, grown around the menu shown inside it, if any.
+    _traySize(h) {
+        const width = this._trayWidth();
+        const height = h + TRAY_CONTENT_HEIGHT;
+        if (!this._menu)
+            return [width, height];
+        const monitor = Main.layoutManager.primaryMonitor;
+        const [, , menuW, menuH] = this._menu._boxPointer.get_preferred_size();
+        const maxW = monitor ? monitor.width - 2 * SCREEN_MARGIN : Infinity;
+        const maxH = monitor ? monitor.height - SCREEN_MARGIN : Infinity;
+        return [
+            Math.round(Math.min(maxW, Math.max(width, menuW + 2 * (RADII.menu[0] + MENU_SIDE_PADDING)))),
+            Math.round(Math.min(maxH, height + menuH + MENU_BOTTOM_PADDING)),
+        ];
     }
 
     _trayWidth() {
@@ -274,6 +303,13 @@ export const Island = GObject.registerClass({
             return;
         const [w, h] = this._sizeFor(this.mode);
         this._targetWidth = w;
+        this._targetHeight = h;
+        // The top bar's height or the monitor may have changed: keep a menu
+        // shown inside the island under the buttons.
+        if (this._menu) {
+            this._placeMenuAnchor();
+            this._menu._boxPointer.queue_relayout();
+        }
         const x = Math.round(monitor.x + (monitor.width - w) / 2);
         const y = monitor.y;
         this.remove_transition('width');
@@ -298,7 +334,7 @@ export const Island = GObject.registerClass({
         const tall = ['message', 'tray', 'activity'].includes(this.mode) ? this.mode : 'open';
         const [, fullH] = this._sizeFor(tall);
         const t = clamp01((h - notchH) / Math.max(1, fullH - notchH));
-        const base = RADII[tall];
+        const base = tall === 'tray' && this._menu ? RADII.menu : RADII[tall];
         const small = this.mode === 'idle' ? RADII.idle : RADII.compact;
         const neck = this._neckWidth(w);
         // f: how much the body sticks out on each side of the top part.
@@ -427,7 +463,10 @@ export const Island = GObject.registerClass({
     // button added, removed, shown, hidden or grown).
     trayChanged() {
         this._later('tray', 0, () => {
-            if (this.mode === 'tray' && this._trayWidth() !== Math.round(this._targetWidth ?? this.width))
+            if (this.mode !== 'tray')
+                return;
+            const [w, h] = this._sizeFor('tray');
+            if (w !== Math.round(this._targetWidth ?? this.width) || h !== Math.round(this._targetHeight ?? this.height))
                 this._applyGeometry(true);
         });
     }
@@ -445,6 +484,94 @@ export const Island = GObject.registerClass({
         } else {
             this._sync(false, animate);
         }
+    }
+
+    // Show a top bar menu (a PopupMenu of one of the tray's buttons) inside
+    // the island, like one card that grows out of it: the island grows around
+    // it, the menu is centered under the buttons, drawn above the island, and
+    // loses its own background/arrow (the 'liland-menu' style class). Call it
+    // once the menu is open; another menu shown replaces this one.
+    showMenu(menu) {
+        if (this._menu === menu)
+            return;
+        if (this._menu)
+            this._releaseMenu();
+        this._menu = menu;
+        const pending = this._pendingStyles.get(menu);
+        if (pending) {
+            pending[0].disconnect(pending[1]);
+            this._pendingStyles.delete(menu);
+        }
+        // menu.actor is the BoxPointer, or (quick settings) an actor holding
+        // it: size, style and position are the BoxPointer's.
+        const pointer = menu._boxPointer;
+        pointer.add_style_class_name('liland-menu');
+        this._placeMenuAnchor();
+        pointer.setPosition(this._menuAnchor, 0.5);
+        if (menu.actor.get_parent() === this.get_parent())
+            menu.actor.get_parent().set_child_above_sibling(menu.actor, this);
+        // Follow the menu's size (submenus, notifications coming and going).
+        const resize = () => this._later('menu', 0, () => {
+            if (this.mode === 'tray')
+                this._applyGeometry(true);
+        });
+        this._menuSignals = [
+            pointer.connect('notify::width', resize),
+            pointer.connect('notify::height', resize),
+        ];
+        if (this.mode === 'tray')
+            this._applyGeometry(true);
+    }
+
+    // Centered on the monitor, right under the tray's buttons.
+    _placeMenuAnchor() {
+        const monitor = Main.layoutManager.primaryMonitor;
+        if (!monitor)
+            return;
+        this._menuAnchor.set_position(
+            Math.round(monitor.x + monitor.width / 2),
+            monitor.y + this._notchHeight + TRAY_CONTENT_HEIGHT - 1);
+    }
+
+    // The menu closed (or went elsewhere): back to the plain tray.
+    hideMenu(menu) {
+        if (this._menu !== menu)
+            return;
+        this._releaseMenu();
+        if (this.mode === 'tray')
+            this._applyGeometry(true);
+    }
+
+    _releaseMenu() {
+        const menu = this._menu;
+        const actor = menu._boxPointer;
+        for (const id of this._menuSignals)
+            actor.disconnect(id);
+        this._menuSignals = [];
+        this._menu = null;
+        // Keep its island look while it fades out.
+        if (actor.visible && !menu.isOpen) {
+            const id = actor.connect('notify::visible', () => this.dropMenuStyle(menu));
+            this._pendingStyles.set(menu, [actor, id]);
+        } else {
+            this.dropMenuStyle(menu);
+        }
+    }
+
+    // Give a menu its own look back (now), unless it's shown in the island.
+    // Also for a menu that reopens elsewhere before its fade-out ended.
+    dropMenuStyle(menu) {
+        const pending = this._pendingStyles.get(menu);
+        if (pending) {
+            pending[0].disconnect(pending[1]);
+            this._pendingStyles.delete(menu);
+        }
+        if (this._menu !== menu)
+            menu._boxPointer?.remove_style_class_name('liland-menu');
+    }
+
+    get menu() {
+        return this._menu;
     }
 
     // While held (e.g. a menu of a tray button is open), the open island
@@ -789,8 +916,16 @@ export const Island = GObject.registerClass({
     }
 
     destroy() {
+        if (this._menu) {
+            const menu = this._menu;
+            this._releaseMenu();
+            this.dropMenuStyle(menu);
+        }
+        for (const menu of [...this._pendingStyles.keys()])
+            this.dropMenuStyle(menu);
         for (const name of Object.keys(this._timeouts))
             this._cancel(name);
+        this._menuAnchor.destroy();
         for (const [obj, id] of this._panelSignals)
             obj.disconnect(id);
         for (const id of this._musicSignals)
