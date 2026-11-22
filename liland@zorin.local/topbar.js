@@ -20,6 +20,8 @@ import GLib from 'gi://GLib';
 import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
+import {ControlCenter} from './controlCenter.js';
+
 export class TopBarTakeover {
     constructor(island, settings) {
         this._island = island;
@@ -85,6 +87,8 @@ export class TopBarTakeover {
         };
 
         this._island.setTopBarReplaced(this._tray, barHeight);
+        // The quick settings menu becomes an iOS-style Control Center.
+        this._controlCenter = new ControlCenter(this._island.nowPlaying);
 
         // Without the top bar, GNOME's own banners (critical notifications,
         // the ones that come while the island is open) would start at the
@@ -188,17 +192,26 @@ export class TopBarTakeover {
         record.menu = menu;
         record.menuId = menu.connect('open-state-changed', (_m, open) => {
             this._island.hold(menu, open);
-            // Opened by someone else while the island was closed: open the
-            // island under it and put the menu back next to its button.
-            // Not for menus shown somewhere else on purpose (e.g. the
-            // clipboard's "open at the pointer").
-            if (open && menu.sourceActor === indicator && this._hiddenInTray(indicator)) {
-                this._island.openTab('tray', false);
-                this._afterLayout('_repositionId', () => {
-                    if (menu.isOpen && indicator.mapped)
-                        menu._boxPointer?.setPosition?.(menu.sourceActor, menu._arrowAlignment);
-                });
+            if (!open) {
+                this._island.hideMenu(menu);
+                return;
             }
+            // Only menus of the tray's buttons, shown at their button; not
+            // menus shown somewhere else on purpose (e.g. the clipboard's
+            // "open at the pointer").
+            if (menu.sourceActor !== indicator || !this._inTray(indicator) || !menu._boxPointer) {
+                // Shown elsewhere: with its own look, even if it was in the
+                // island a moment ago.
+                this._island.dropMenuStyle(menu);
+                return;
+            }
+            // Opened while the island isn't showing the tray (a shortcut,
+            // the island closed or on another tab): show the tray first,
+            // right away, so the island's card is there behind the menu.
+            if (this._island.mode !== 'tray')
+                this._island.openTab('tray', false);
+            // The menu becomes part of the island.
+            this._island.showMenu(menu);
         });
     }
 
@@ -211,6 +224,7 @@ export class TopBarTakeover {
         if (record.menu) {
             record.menu.disconnect(record.menuId);
             this._island.hold(record.menu, false);
+            this._island.hideMenu(record.menu);
         }
         this._menus.delete(indicator);
     }
@@ -222,7 +236,6 @@ export class TopBarTakeover {
             GLib.source_remove(this._hidePanelId);
         this._hidePanelId = 0;
         this._cancelAfterLayout('_toggleId');
-        this._cancelAfterLayout('_repositionId');
 
         if (this._hadOwnToggle)
             panel._toggleMenu = this._originalToggle;
@@ -232,6 +245,8 @@ export class TopBarTakeover {
 
         // Close the menus anchored to the tray before their buttons move.
         panel.menuManager?.activeMenu?.close(false);
+        this._controlCenter?.destroy();
+        this._controlCenter = null;
         for (const indicator of [...this._menus.keys()])
             this._unwatch(indicator);
         this._menus = null;

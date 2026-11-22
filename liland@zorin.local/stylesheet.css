@@ -99,3 +99,79 @@
 .liland-tray .app-menu-icon { icon-size: 16px; padding: 0 4px; color: #ffffff; }
 .liland-tray .panel-status-indicators-box,
 .liland-tray .panel-status-menu-box { spacing: 2px; }
+
+/* ---------- top bar menus shown inside the island ---------- */
+/* No arrow, no gap, no own card: the island is the card. !important beats
+   shell themes (e.g. WhiteSur) that set these with !important too. */
+.liland-menu {
+    -arrow-rise: 0px; -arrow-base: 0px; -boxpointer-gap: 0px;
+    -arrow-border-width: 0px; -arrow-background-color: transparent; -arrow-box-shadow: none;
+}
+.liland-menu .popup-menu-content,
+.liland-menu .quick-settings,
+.liland-menu .datemenu-popover {
+    background-color: transparent !important;
+    box-shadow: none !important;
+    border-width: 0 !important;
+    margin: 0 !important;
+}
+
+/* ---------- iOS-style Control Center ---------- */
+.liland-cc { spacing: 10px; padding: 2px 0 0 0; }
+.liland-cc-grid { }
+.liland-cc-tile {
+    border-radius: 22px;
+    background-color: rgba(255,255,255,0.12);
+    color: #ffffff;
+}
+.liland-cc-tile:hover { background-color: rgba(255,255,255,0.17); }
+.liland-cc-tile:focus { box-shadow: inset 0 0 0 2px rgba(255,255,255,0.5); }
+
+.liland-cc-connectivity { padding: 10px; }
+.liland-cc-connectivity:hover { background-color: rgba(255,255,255,0.12); }
+.liland-cc-round {
+    width: 50px; height: 50px; border-radius: 25px;
+    background-color: rgba(255,255,255,0.16);
+    color: #ffffff;
+}
+.liland-cc-round:hover { background-color: rgba(255,255,255,0.24); }
+.liland-cc-on-blue { background-color: #0a84ff; }
+.liland-cc-on-blue:hover { background-color: #3d9bff; }
+.liland-cc-on-orange { background-color: #ff9f0a; }
+.liland-cc-on-orange:hover { background-color: #ffb340; }
+.liland-cc-on-purple { background-color: #5e5ce6; }
+
+.liland-cc-square-on, .liland-cc-square-on:hover { background-color: #ffffff; color: #1c1c1e; }
+.liland-cc-circle { border-radius: 33px; }
+
+.liland-cc-media { padding: 12px 12px 8px 12px; }
+.liland-cc-media:hover { background-color: rgba(255,255,255,0.12); }
+.liland-cc-media-top { spacing: 10px; }
+.liland-cc-media-art { border-radius: 8px; background-color: rgba(255,255,255,0.14); color: rgba(255,255,255,0.6); }
+.liland-cc-media-texts { spacing: 2px; }
+.liland-cc-media-title { font-size: 13px; font-weight: 600; color: #ffffff; }
+.liland-cc-media-artist { font-size: 12px; color: rgba(255,255,255,0.6); }
+.liland-cc-media-controls { spacing: 6px; }
+.liland-cc-media-button { width: 38px; height: 34px; border-radius: 17px; color: #ffffff; }
+.liland-cc-media-button:hover { background-color: rgba(255,255,255,0.14); }
+
+.liland-cc-focus { padding: 0 10px; }
+.liland-cc-focus-box { spacing: 8px; }
+.liland-cc-focus-circle {
+    width: 32px; height: 32px; border-radius: 16px;
+    background-color: rgba(255,255,255,0.16); color: #ffffff;
+}
+.liland-cc-focus-label { font-size: 12px; font-weight: 600; color: #ffffff; }
+
+.liland-cc-vslider { border-radius: 22px; }
+.liland-cc-vslider:hover { background-color: rgba(255,255,255,0.12); }
+.liland-cc-vslider-fill { background-color: #ffffff; border-radius: 0 0 22px 22px; }
+.liland-cc-vslider-icon { color: #ffffff; margin-bottom: 14px; }
+.liland-cc-vslider-icon-dark { color: #1c1c1e; }
+
+.liland-cc-back {
+    font-size: 13px; font-weight: 600; color: #ffffff;
+    padding: 6px 12px; border-radius: 99px;
+    background-color: rgba(255,255,255,0.12);
+}
+.liland-cc-back:hover { background-color: rgba(255,255,255,0.2); }
