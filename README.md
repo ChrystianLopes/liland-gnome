@@ -7,13 +7,23 @@ quando tem música tocando, o centro da barra superior vira uma ilha preta com a
 passando o mouse por cima, ela abre um player com a música, o artista, a barra de progresso (dá pra arrastar) e os controles,
 incluindo aleatório e repetir quando o app informa esses modos.
 
-a ilha **substitui a barra superior**: a barra do gnome some (as janelas ganham o espaço) e a ilha fica sempre lá,
+a ilha **substitui a barra superior**: a barra do gnome some e a ilha fica sempre lá (como a barra de menus do macOS,
+ela reserva a faixa do topo: janelas maximizadas começam logo abaixo dela),
 mostrando a hora (e, com música, a capa e o equalizador ao lado dela). passando o mouse, ela abre com duas abas:
 
 - **música**: o player (ou "nada tocando", com um botão para abrir o spotify ou o último player usado).
 - **bandeja**: todos os botões que ficavam na barra (configurações rápidas, calendário e notificações, menu do zorin,
-  ícones de apps, clipboard, impressoras, outras extensões...). os menus deles abrem logo abaixo da ilha, que fica
-  aberta enquanto um menu estiver aberto. os atalhos de teclado (ex.: super+v para o calendário) abrem a ilha na bandeja.
+  ícones de apps, clipboard, impressoras, outras extensões...). os menus deles abrem **dentro da ilha**, que cresce em
+  volta deles. os atalhos de teclado (ex.: super+v para o calendário) abrem a ilha na bandeja.
+
+as configurações rápidas viram uma **central de controle** inspirada no macOS: wi-fi, bluetooth e modo avião (clicar no
+ícone liga/desliga; clicar no nome abre a lista de redes ou dispositivos), não perturbe, aparência (claro/escuro),
+luz noturna, sliders de tela e som, música tocando, captura de tela, bloquear, configurações, desligar e "mais controles"
+(a grade original do gnome, com tudo o que outras extensões adicionam).
+
+o visual é de **vidro** (desfoque real do que está atrás, wallpaper ou janelas) e segue o modo **claro/escuro**. o botão
+aparência troca o desktop inteiro: esquema de cor e, quando existem as variantes, os temas gtk, do gnome e de ícones
+(ex.: `WhiteSur-Dark` ↔ `WhiteSur-Light`).
 
 sem música tocando, a ilha abre direto na bandeja. desligando a opção **substituir a barra superior** (ou a extensão),
 a barra volta exatamente como estava.
@@ -70,6 +80,7 @@ ficam no ícone de cápsula (na aba bandeja da ilha, ou na barra superior se ela
   é só deixar essa opção desligada (é o padrão).
 - **volume e brilho na ilha** / **notificações na ilha** ligam e desligam cada atividade (desligado, volta o aviso
   normal do gnome).
+- **efeito vidro** liga o desfoque atrás da ilha (desligado, ela fica sólida).
 - **sair do liland** desativa a extensão (reative com `gnome-extensions enable liland@zorin.local`).
 
 pra esconder o ícone da barra: `gsettings --schemadir ~/.local/share/gnome-shell/extensions/liland@zorin.local/schemas set org.gnome.shell.extensions.liland show-indicator false`
@@ -80,7 +91,9 @@ pra esconder o ícone da barra: `gsettings --schemadir ~/.local/share/gnome-shel
 | --- | --- |
 | `extension.js` | liga tudo e monta o menu da cápsula |
 | `island.js` | a ilha: forma de notch, hora, abas, modos idle/compacto/aberto/mensagem/bandeja/atividade, animações, hover e clique |
-| `topbar.js` | substitui a barra: esconde a barra (sem reservar espaço), leva as caixas de botões dela para a aba bandeja e devolve tudo ao desligar |
+| `topbar.js` | substitui a barra: esconde a barra, reserva a faixa da ilha no topo, leva as caixas de botões dela para a aba bandeja, abre os menus dentro da ilha e devolve tudo ao desligar |
+| `controlCenter.js` | a central de controle (dentro do menu de configurações rápidas do gnome, usando os controles dele) |
+| `appearance.js` | claro/escuro do desktop inteiro (esquema de cor + variantes de tema) |
 | `activities/music.js` | o player de música: pílula compacta, player aberto, "nada tocando", barra de progresso e equalizador |
 | `activities/osd.js` | volume/brilho na ilha (assume o `Main.osdWindowManager.show` do gnome) |
 | `activities/notifications.js` | notificações na ilha (assume o `MessageTray._showNotification` do gnome) |

@@ -1,14 +1,105 @@
 // The island: a black "notch" at the top center. It shows the music player
 // (activities/music.js), temporary activities (volume, notifications...) and,
 // when it replaces the top bar (topbar.js), the time and the top bar's buttons.
+import Cairo from 'cairo';
 import Clutter from 'gi://Clutter';
+import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import GnomeDesktop from 'gi://GnomeDesktop';
+import Shell from 'gi://Shell';
 import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 import {MusicPlayer, OPEN_CONTENT_HEIGHT, MESSAGE_CONTENT_HEIGHT} from './activities/music.js';
+
+// Liquid Glass: what's behind the island (wallpaper, windows) is blurred by
+// Shell.BlurEffect (the lock screen's). It only blurs rectangles and can't be
+// cut to a shape afterwards (an offscreen effect around it makes it blur an
+// empty buffer), and blurring several pieces leaves seams. So: one blurred
+// rectangle between the island's side walls, and in the two bottom corners,
+// where that rectangle goes past the round edge, the sharp scene is painted
+// back over the outside of the curve: a clone of the windows and wallpaper
+// (global.window_group), masked by CornerMask. The ears at the top (outside
+// the walls) aren't blurred at all; the tint (_drawShape) covers the rest.
+const CornerMask = GObject.registerClass(
+class LilandCornerMask extends Clutter.ShaderEffect {
+    // left: the corner's curve is centered on its top-right point (the
+    // island's bottom-left corner); else on its top-left one.
+    _init(left) {
+        super._init();
+        this._left = left;
+    }
+
+    vfunc_get_static_shader_source() {
+        return `uniform sampler2D tex;
+uniform float size;
+uniform float left;
+void main() {
+    vec2 uv = cogl_tex_coord_in[0].st;
+    vec2 p = uv * vec2(size, size);
+    vec2 c = left > 0.5 ? vec2(size, 0.0) : vec2(0.0, 0.0);
+    // Keep what's outside the curve (the island's shape is inside it).
+    float a = clamp(length(p - c) - size + 0.5, 0.0, 1.0);
+    cogl_color_out = texture2D(tex, uv) * a;
+}`;
+    }
+
+    vfunc_paint_target(node, paintContext) {
+        // Non-integer values: GJS hands floats (not ints) to the shader.
+        this.set_uniform_value('tex', 0);
+        this.set_uniform_value('size', this.get_actor().width + 1e-4);
+        this.set_uniform_value('left', this._left ? 1.0001 : 0.0001);
+        super.vfunc_paint_target(node, paintContext);
+    }
+});
+
+class GlassBackdrop {
+    constructor(radius) {
+        this.actor = new Clutter.Actor({x_expand: true, y_expand: true, reactive: false});
+        this._blur = new Clutter.Actor({reactive: false});
+        this._blur.add_effect(new Shell.BlurEffect({mode: Shell.BlurMode.BACKGROUND, radius, brightness: 1.0}));
+        this.actor.add_child(this._blur);
+        this._corners = [true, false].map(left => {
+            const corner = new Clutter.Actor({reactive: false, clip_to_allocation: true});
+            corner.add_effect(new CornerMask(left));
+            const clone = new Clutter.Clone({source: global.window_group, reactive: false});
+            corner.add_child(clone);
+            this.actor.add_child(corner);
+            return {corner, clone, left};
+        });
+        this._key = '';
+    }
+
+    // The island is w x h at (x, y) on the stage, its side walls `ear` in from
+    // the edges, its bottom corners `bottom` round.
+    update(x, y, w, h, ear, bottom) {
+        const key = [x, y, w, h, ear, bottom].map(Math.round).join(',');
+        if (key === this._key)
+            return;
+        this._key = key;
+        this._blur.set_position(Math.round(ear), 0);
+        this._blur.set_size(Math.max(0, Math.round(w - 2 * ear)), Math.max(0, Math.round(h)));
+        const size = Math.round(bottom);
+        for (const {corner, clone, left} of this._corners) {
+            const cx = Math.round(left ? ear : w - ear - bottom);
+            const cy = Math.round(h - bottom);
+            corner.visible = size >= 1;
+            corner.set_position(cx, cy);
+            corner.set_size(size, size);
+            // The clone shows the scene where it is on the stage.
+            clone.set_position(-Math.round(x) - cx, -Math.round(y) - cy);
+            clone.set_size(global.stage.width, global.stage.height);
+        }
+    }
+}
+
+// Glass tints (dark / light style).
+const GLASS = {
+    dark: {tint: [0.09, 0.09, 0.11, 0.52], solid: [0, 0, 0, 1], rim: [1, 1, 1, 0.16], shine: 0.07},
+    light: {tint: [0.97, 0.97, 0.98, 0.58], solid: [0.96, 0.96, 0.97, 1], rim: [0, 0, 0, 0.12], shine: 0.35},
+};
+const GLASS_BLUR_RADIUS = 36;
 
 // Same numbers as Liland's NotchGeometry / NotchMode.
 const NOTCH_WIDTH = 190;
@@ -88,6 +179,27 @@ export const Island = GObject.registerClass({
         this._bg = new St.DrawingArea({x_expand: true, y_expand: true});
         this._bg.connect('repaint', area => this._drawShape(area));
         this.add_child(this._bg);
+
+        // Liquid Glass (see GlassBackdrop), under the tint, and light / dark
+        // style.
+        this._glass = new GlassBackdrop(GLASS_BLUR_RADIUS);
+        this._glass.actor.visible = false;
+        this.insert_child_below(this._glass.actor, this._bg);
+        for (const prop of ['x', 'y', 'width', 'height'])
+            this.connect(`notify::${prop}`, () => this._syncGlass());
+        this._interfaceSettings = new Gio.Settings({schema_id: 'org.gnome.desktop.interface'});
+        this._styleIds = [
+            [this._interfaceSettings, this._interfaceSettings.connect('changed::color-scheme', () => this._syncStyle())],
+            [settings, settings.connect('changed::glass-effect', () => this._syncStyle())],
+        ];
+        // The shell theme (User Themes extension), if any: menus shown in the
+        // island are drawn by it, so the island is light only with a light one.
+        const source = Gio.SettingsSchemaSource.get_default();
+        if (source?.lookup('org.gnome.shell.extensions.user-theme', true)) {
+            this._userTheme = new Gio.Settings({schema_id: 'org.gnome.shell.extensions.user-theme'});
+            this._styleIds.push([this._userTheme, this._userTheme.connect('changed::name', () => this._syncStyle())]);
+        }
+        this._syncStyle();
 
         this._music = new MusicPlayer(nowPlaying, levels, {
             openWidth: OPEN_WIDTH - RADII.open[0] * 2,
@@ -327,9 +439,9 @@ export const Island = GObject.registerClass({
         }
     }
 
-    _drawShape(area) {
-        const cr = area.get_context();
-        const [w, h] = area.get_surface_size();
+    // The island's shape for a w x h size: f (how much the body sticks out on
+    // each side of the top part), ear / top radius, shoulders, bottom radius.
+    _shape(w, h) {
         const notchH = this._notchHeight;
         const tall = ['message', 'tray', 'activity'].includes(this.mode) ? this.mode : 'open';
         const [, fullH] = this._sizeFor(tall);
@@ -345,29 +457,107 @@ export const Island = GObject.registerClass({
         const s = f > 0 ? Math.max(0, Math.min(10, f / 2, notchH - topR, bodyH / 2)) : 0;
         const botR = Math.max(0, Math.min(lerp(small[1], base[1], t), (w - topR * 2) / 2,
             f > 0 ? bodyH - s : h - topR));
+        return {notchH, f, topR, s, botR};
+    }
 
-        // Clockwise from the top-left corner. With f = 0 (and so s = 0) this is
-        // the plain notch shape.
-        cr.moveTo(f, 0);
-        quadTo(cr, [f, 0], [f + topR, 0], [f + topR, topR]);
-        cr.lineTo(f + topR, notchH - s);
-        quadTo(cr, [f + topR, notchH - s], [f + topR, notchH], [f + topR - s, notchH]);
-        cr.lineTo(topR + s, notchH);
-        quadTo(cr, [topR + s, notchH], [topR, notchH], [topR, notchH + s]);
-        cr.lineTo(topR, h - botR);
-        quadTo(cr, [topR, h - botR], [topR, h], [topR + botR, h]);
-        cr.lineTo(w - topR - botR, h);
-        quadTo(cr, [w - topR - botR, h], [w - topR, h], [w - topR, h - botR]);
-        cr.lineTo(w - topR, notchH + s);
-        quadTo(cr, [w - topR, notchH + s], [w - topR, notchH], [w - topR - s, notchH]);
-        cr.lineTo(w - f - topR + s, notchH);
-        quadTo(cr, [w - f - topR + s, notchH], [w - f - topR, notchH], [w - f - topR, notchH - s]);
-        cr.lineTo(w - f - topR, topR);
-        quadTo(cr, [w - f - topR, topR], [w - f - topR, 0], [w - f, 0]);
-        cr.closePath();
-        cr.setSourceRGBA(0, 0, 0, 1);
-        cr.fill();
+    _drawShape(area) {
+        const cr = area.get_context();
+        const [w, h] = area.get_surface_size();
+        const {notchH, f, topR, s, botR} = this._shape(w, h);
+        const style = this._light ? GLASS.light : GLASS.dark;
+        const glass = this._settings.get_boolean('glass-effect') && f === 0;
+        if (f === 0) {
+            // The island's own shape: concave ears at the top corners, round
+            // bottom corners.
+            cr.moveTo(0, 0);
+            cr.arc(0, topR, topR, -Math.PI / 2, 0);
+            cr.lineTo(topR, h - botR);
+            cr.arcNegative(topR + botR, h - botR, botR, Math.PI, Math.PI / 2);
+            cr.lineTo(w - topR - botR, h);
+            cr.arcNegative(w - topR - botR, h - botR, botR, Math.PI / 2, 0);
+            cr.lineTo(w - topR, topR);
+            cr.arc(w, topR, topR, Math.PI, 1.5 * Math.PI);
+            cr.closePath();
+        } else {
+            // With a narrower top part (the top bar is there): the notch shape
+            // with shoulders. Clockwise from the top-left corner.
+            cr.moveTo(f, 0);
+            quadTo(cr, [f, 0], [f + topR, 0], [f + topR, topR]);
+            cr.lineTo(f + topR, notchH - s);
+            quadTo(cr, [f + topR, notchH - s], [f + topR, notchH], [f + topR - s, notchH]);
+            cr.lineTo(topR + s, notchH);
+            quadTo(cr, [topR + s, notchH], [topR, notchH], [topR, notchH + s]);
+            cr.lineTo(topR, h - botR);
+            quadTo(cr, [topR, h - botR], [topR, h], [topR + botR, h]);
+            cr.lineTo(w - topR - botR, h);
+            quadTo(cr, [w - topR - botR, h], [w - topR, h], [w - topR, h - botR]);
+            cr.lineTo(w - topR, notchH + s);
+            quadTo(cr, [w - topR, notchH + s], [w - topR, notchH], [w - topR - s, notchH]);
+            cr.lineTo(w - f - topR + s, notchH);
+            quadTo(cr, [w - f - topR + s, notchH], [w - f - topR, notchH], [w - f - topR, notchH - s]);
+            cr.lineTo(w - f - topR, topR);
+            quadTo(cr, [w - f - topR, topR], [w - f - topR, 0], [w - f, 0]);
+            cr.closePath();
+        }
+
+        if (glass) {
+            // Tint over the blur, a soft shine from the top, a thin bright rim.
+            cr.setSourceRGBA(...style.tint);
+            cr.fillPreserve();
+            const shine = new Cairo.LinearGradient(0, 0, 0, Math.max(1, h));
+            shine.addColorStopRGBA(0, 1, 1, 1, style.shine);
+            shine.addColorStopRGBA(Math.min(1, 60 / Math.max(1, h)), 1, 1, 1, 0);
+            cr.setSource(shine);
+            cr.fillPreserve();
+            cr.setSourceRGBA(...style.rim);
+            cr.setLineWidth(1.5);
+            cr.stroke();
+        } else {
+            cr.setSourceRGBA(...style.solid);
+            cr.fill();
+        }
         cr.$dispose();
+    }
+
+    // The glass follows the island's size, place and shape (outside of the
+    // paint cycle): only with glass on, the plain shape (no narrower top
+    // part) and while the island is drawn (not the invisible idle one).
+    _syncGlass() {
+        const {f, topR, botR} = this._shape(this.width, this.height);
+        const shown = this._settings.get_boolean('glass-effect') && f === 0 &&
+            this._bg.opacity > 0 && !(this.mode === 'idle' && !this._tray);
+        if (shown) {
+            const [x, y] = this.get_transformed_position();
+            this._glass.update(x, y, this.width, this.height, topR, botR);
+        }
+        if (this._glass.actor.visible !== shown)
+            this._glass.actor.visible = shown;
+    }
+
+    // Light / dark style and glass on / off: restyle everything. Light only
+    // when it all is: the color scheme, the shell theme (GNOME 46's own one
+    // is dark; menus shown in the island use it) and the island being the
+    // top bar (else it's a black notch).
+    _syncStyle() {
+        const lightScheme = this._interfaceSettings.get_string('color-scheme') !== 'prefer-dark';
+        const lightShell = /light/i.test(this._userTheme?.get_string('name') ?? '');
+        this._light = lightScheme && lightShell && Boolean(this._tray);
+        if (this._light)
+            this.add_style_class_name('liland-light');
+        else
+            this.remove_style_class_name('liland-light');
+        if (this._menu)
+            this._styleMenu(this._menu._boxPointer);
+        this._bg.queue_repaint();
+        this._syncGlass();
+    }
+
+    _styleMenu(pointer) {
+        pointer.add_style_class_name('liland-menu');
+        if (this._light)
+            pointer.add_style_class_name('liland-light');
+        else
+            pointer.remove_style_class_name('liland-light');
     }
 
     // ---------- activities (public API) ----------
@@ -453,6 +643,7 @@ export const Island = GObject.registerClass({
         if (!tray && this._tab === 'tray')
             this._tab = 'music';
         this._holds.clear();
+        this._syncStyle();
         this._panelGap = undefined;
         this._measurePanel();
         this._syncHeaderInsets();
@@ -505,7 +696,7 @@ export const Island = GObject.registerClass({
         // menu.actor is the BoxPointer, or (quick settings) an actor holding
         // it: size, style and position are the BoxPointer's.
         const pointer = menu._boxPointer;
-        pointer.add_style_class_name('liland-menu');
+        this._styleMenu(pointer);
         this._placeMenuAnchor();
         pointer.setPosition(this._menuAnchor, 0.5);
         if (menu.actor.get_parent() === this.get_parent())
@@ -566,8 +757,10 @@ export const Island = GObject.registerClass({
             pending[0].disconnect(pending[1]);
             this._pendingStyles.delete(menu);
         }
-        if (this._menu !== menu)
+        if (this._menu !== menu) {
             menu._boxPointer?.remove_style_class_name('liland-menu');
+            menu._boxPointer?.remove_style_class_name('liland-light');
+        }
     }
 
     get menu() {
@@ -764,7 +957,13 @@ export const Island = GObject.registerClass({
             opacity: to === 'idle' && !replaced ? 0 : 255,
             duration: animate ? 250 : 0,
             mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+            onComplete: () => {
+                this._bg.queue_repaint();
+                this._syncGlass();
+            },
         });
+        this._bg.queue_repaint();
+        this._syncGlass();
         this._applyGeometry(animate);
     }
 
@@ -937,6 +1136,8 @@ export const Island = GObject.registerClass({
         this.nowPlaying.disconnect(this._npChangedId);
         this.nowPlaying.disconnect(this._npTrackId);
         Main.layoutManager.disconnect(this._monitorsId);
+        for (const [obj, id] of this._styleIds)
+            obj.disconnect(id);
         // The tray's buttons are the top bar's: topbar.js takes them back
         // before the island goes; don't destroy them with it.
         if (this._tray)
