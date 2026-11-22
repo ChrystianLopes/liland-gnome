@@ -1,27 +1,31 @@
-// The island: a black "notch" at the top center that grows into a player.
+// The island: a black "notch" at the top center. It shows the music player
+// (activities/music.js), temporary activities (volume, notifications...) and,
+// when it replaces the top bar (topbar.js), the time and the top bar's buttons.
 import Clutter from 'gi://Clutter';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
-import Gio from 'gi://Gio';
-import Pango from 'gi://Pango';
-import Shell from 'gi://Shell';
+import GnomeDesktop from 'gi://GnomeDesktop';
 import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
-import {_} from './i18n.js';
+import {MusicPlayer, OPEN_CONTENT_HEIGHT, MESSAGE_CONTENT_HEIGHT} from './activities/music.js';
 
 // Same numbers as Liland's NotchGeometry / NotchMode.
 const NOTCH_WIDTH = 190;
 const COMPACT_WING = 42;
 export const COMPACT_WIDTH = NOTCH_WIDTH + COMPACT_WING * 2;
 export const OPEN_WIDTH = 480;
-const OPEN_CONTENT_HEIGHT = 140;
-const MESSAGE_CONTENT_HEIGHT = 70;
+const TRAY_CONTENT_HEIGHT = 48;
+// Room between the tray's buttons and the island's side walls.
+const TRAY_SIDE_PADDING = 14;
+// Free space kept on each side of the screen by a very wide tray.
+const SCREEN_MARGIN = 24;
 const RADII = {
     idle: [6, 10],
     compact: [6, 12],
     open: [18, 28],
     message: [16, 24],
+    tray: [16, 24],
     activity: [16, 24],
 };
 const OPEN_DELAY = 100;
@@ -30,132 +34,16 @@ const PEEK_DURATION = 3500;
 const ANIM_MS = 380;
 // Space kept free between the island and the top bar items next to it.
 const PANEL_GAP_MARGIN = 8;
-
-const SPOTIFY_IDS = ['spotify.desktop', 'spotify_spotify.desktop', 'com.spotify.Client.desktop'];
+// Width of the tab buttons at the top right of the open island.
+const TAB_BAR_WIDTH = 64;
 
 const lerp = (a, b, t) => a + (b - a) * t;
 const clamp01 = v => Math.min(Math.max(v, 0), 1);
-const rgbCss = ([r, g, b], a = 1) => `rgba(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)},${a})`;
-
-function formatTime(seconds) {
-    const total = Math.max(0, Math.floor(seconds));
-    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
-}
 
 // Quadratic curve helper for cairo (which only has cubic curves).
 function quadTo(cr, [x0, y0], [qx, qy], [x, y]) {
     cr.curveTo(x0 + 2 / 3 * (qx - x0), y0 + 2 / 3 * (qy - y0),
         x + 2 / 3 * (qx - x), y + 2 / 3 * (qy - y), x, y);
-}
-
-const EqualizerView = GObject.registerClass(
-class LilandEqualizer extends St.DrawingArea {
-    static RESTING = [0.69, 0.2, 0.56, 0.74, 0.75, 0.63];
-    static SPEEDS = [5.1, 6.7, 4.3, 7.9, 5.6, 6.1];
-    static PHASES = [0, 1.3, 2.6, 0.7, 2.1, 3.4];
-
-    _init(width, height, island) {
-        super._init({width, height, y_align: Clutter.ActorAlign.CENTER});
-        this._island = island;
-    }
-
-    vfunc_repaint() {
-        const cr = this.get_context();
-        const [w, h] = this.get_surface_size();
-        const island = this._island;
-        const live = island.liveLevels;
-        const time = GLib.get_monotonic_time() / 1e6;
-        const playFactor = island.playFactor;
-        const count = 6, gap = 0.65;
-        const barW = w / (count + (count - 1) * gap);
-        const [r, g, b] = island.nowPlaying.accentColor;
-        cr.setSourceRGBA(r, g, b, 1);
-        for (let i = 0; i < count; i++) {
-            let level;
-            if (live)
-                level = live[i] ?? 0;
-            else {
-                const fast = Math.sin(time * EqualizerView.SPEEDS[i] + EqualizerView.PHASES[i]);
-                const slow = Math.sin(time * EqualizerView.SPEEDS[i] * 0.53 + EqualizerView.PHASES[i] * 2);
-                level = clamp01(EqualizerView.RESTING[i] + 0.22 * (fast * 0.6 + slow * 0.4));
-            }
-            level *= playFactor;
-            const barH = barW + (h - barW) * level;
-            const x = i * barW * (1 + gap);
-            const y = (h - barH) / 2;
-            const rad = barW / 2;
-            cr.newSubPath();
-            cr.arc(x + rad, y + rad, rad, Math.PI, 0);
-            cr.arc(x + rad, y + barH - rad, rad, 0, Math.PI);
-            cr.closePath();
-            cr.fill();
-        }
-        cr.$dispose();
-    }
-});
-
-const ArtworkView = GObject.registerClass(
-class LilandArtwork extends St.Bin {
-    _init(size, radius) {
-        super._init({
-            width: size, height: size,
-            style_class: 'liland-artwork',
-            style: `border-radius: ${radius}px;`,
-            y_align: Clutter.ActorAlign.CENTER,
-        });
-        this._radius = radius;
-        this._placeholder = new St.Icon({
-            icon_name: 'audio-x-generic-symbolic',
-            icon_size: Math.max(8, Math.round(radius * 1.6)),
-            style_class: 'liland-artwork-placeholder',
-            x_align: Clutter.ActorAlign.CENTER,
-            y_align: Clutter.ActorAlign.CENTER,
-        });
-        this._path = undefined;
-        this.setPath(null);
-    }
-
-    setPath(path) {
-        if (path === this._path)
-            return;
-        this._path = path;
-        if (path) {
-            const uri = Gio.File.new_for_path(path).get_uri();
-            this.style = `border-radius: ${this._radius}px; background-image: url("${uri}"); background-size: cover;`;
-            this.set_child(null);
-        } else {
-            this.style = `border-radius: ${this._radius}px; background-color: rgba(255,255,255,0.12);`;
-            this.set_child(this._placeholder);
-        }
-        this.opacity = 0;
-        this.ease({opacity: 255, duration: 250, mode: Clutter.AnimationMode.EASE_OUT_QUAD});
-    }
-});
-
-function controlButton(iconName, size, onClick) {
-    const icon = new St.Icon({icon_name: iconName, icon_size: size});
-    const button = new St.Button({
-        style_class: 'liland-control',
-        child: icon,
-        width: 40, height: 30,
-        can_focus: false,
-    });
-    button.set_pivot_point(0.5, 0.5);
-    button.connect('clicked', onClick);
-    button.connect('button-press-event', () => {
-        button.ease({scale_x: 0.88, scale_y: 0.88, duration: 90, mode: Clutter.AnimationMode.EASE_OUT_QUAD});
-        return Clutter.EVENT_PROPAGATE;
-    });
-    button.connect('button-release-event', () => {
-        button.ease({scale_x: 1, scale_y: 1, duration: 260, mode: Clutter.AnimationMode.EASE_OUT_BACK});
-        return Clutter.EVENT_PROPAGATE;
-    });
-    button.connect('notify::hover', () => {
-        if (!button.hover)
-            button.ease({scale_x: 1, scale_y: 1, duration: 150, mode: Clutter.AnimationMode.EASE_OUT_QUAD});
-    });
-    button.icon = icon;
-    return button;
 }
 
 export const Island = GObject.registerClass({
@@ -174,12 +62,8 @@ export const Island = GObject.registerClass({
         });
         this.nowPlaying = nowPlaying;
         this._settings = settings;
-        this._levels = levels;
         this.status = 'closed';
         this.mode = 'idle';
-        this.playFactor = 0;
-        this.liveLevels = null;
-        this._isInteracting = false;
         this._isPeeking = false;
         this._timeouts = {};
         this._panelGap = Infinity;
@@ -188,14 +72,33 @@ export const Island = GObject.registerClass({
         // is on top; when it ends, the one below shows again.
         this._activities = [];
         this._shownContent = null;
+        // Set while the island replaces the top bar (see setTopBarReplaced).
+        this._tray = null;
+        this._barHeight = 0;
+        // Tab shown while open: 'music' or 'tray'.
+        this._tab = 'music';
+        // Things that keep the open island open (e.g. a tray button's menu).
+        this._holds = new Set();
 
         this._bg = new St.DrawingArea({x_expand: true, y_expand: true});
         this._bg.connect('repaint', area => this._drawShape(area));
         this.add_child(this._bg);
 
-        this._buildCompact();
-        this._buildOpen();
-        this._buildMessage();
+        this._music = new MusicPlayer(nowPlaying, levels, {
+            openWidth: OPEN_WIDTH - RADII.open[0] * 2,
+            emptyWidth: OPEN_WIDTH - RADII.message[0] * 2,
+        });
+        this.add_child(this._music.compactActor);
+        this.add_child(this._music.openActor);
+        this.add_child(this._music.emptyActor);
+        this._musicSignals = [
+            this._music.connect('interaction-ended', () => this._handleHover()),
+            this._music.connect('app-launched', () => this._close()),
+        ];
+
+        this._buildTrayView();
+        this._buildClock();
+        this._buildTabBar();
 
         this.connect('notify::hover', () => this._handleHover());
         this.connect('button-press-event', () => {
@@ -210,12 +113,6 @@ export const Island = GObject.registerClass({
 
         this._npChangedId = nowPlaying.connect('changed', () => this._sync());
         this._npTrackId = nowPlaying.connect('track-changed', () => this._peek());
-        this._levelsId = levels.connect('levels', (_l, values) => {
-            this.liveLevels = values;
-        });
-        this._levelsStopId = levels.connect('stopped', () => {
-            this.liveLevels = null;
-        });
         this._monitorsId = Main.layoutManager.connect('monitors-changed', () => {
             this._applyGeometry(false);
             this._remeasurePanel();
@@ -224,7 +121,9 @@ export const Island = GObject.registerClass({
         // extensions), and the top bar itself can move or be shown/hidden:
         // measure again (after the relayout) so the island never covers them.
         const remeasure = () => this._remeasurePanel();
+        const theme = St.ThemeContext.get_for_stage(global.stage);
         this._panelSignals = [
+            [theme, theme.connect('changed', remeasure)],
             ...this._panelBoxes().map(box => [box, box.connect('notify::allocation', remeasure)]),
             [Main.layoutManager.panelBox, Main.layoutManager.panelBox.connect('notify::allocation', remeasure)],
             [Main.panel, Main.panel.connect('notify::mapped', remeasure)],
@@ -237,6 +136,12 @@ export const Island = GObject.registerClass({
     // ---------- geometry ----------
 
     get _notchHeight() {
+        // Replacing the top bar, keep its height (live: the theme or the
+        // scale can change it while it's hidden).
+        if (this._tray) {
+            const [, height] = Main.panel.get_preferred_height(-1);
+            return Math.max(height > 0 ? height : this._barHeight, 32);
+        }
         // Like Liland on Macs without a notch: as tall as the menu bar (the
         // top bar here), when the top bar is actually at the top.
         return this._panelAtTop() ? Math.max(Main.panel.height, 24) : 32;
@@ -248,9 +153,18 @@ export const Island = GObject.registerClass({
         case 'compact': return [NOTCH_WIDTH + COMPACT_WING * 2, h];
         case 'open': return [OPEN_WIDTH, h + OPEN_CONTENT_HEIGHT];
         case 'message': return [OPEN_WIDTH, h + MESSAGE_CONTENT_HEIGHT];
+        case 'tray': return [this._trayWidth(), h + TRAY_CONTENT_HEIGHT];
         case 'activity': return [this._activity?.width ?? COMPACT_WIDTH, h + (this._activity?.contentHeight ?? 0)];
         default: return [NOTCH_WIDTH, h];
         }
+    }
+
+    _trayWidth() {
+        const monitor = Main.layoutManager.primaryMonitor;
+        const [, natural] = this._trayRow.get_preferred_width(-1);
+        const wanted = natural + 2 * (RADII.tray[0] + TRAY_SIDE_PADDING);
+        const max = monitor ? monitor.width - 2 * SCREEN_MARGIN : wanted;
+        return Math.round(Math.max(OPEN_WIDTH, Math.min(wanted, max)));
     }
 
     _remeasurePanel() {
@@ -263,7 +177,12 @@ export const Island = GObject.registerClass({
 
     _panelAtTop() {
         const monitor = Main.layoutManager.primaryMonitor;
-        if (!monitor || !Main.panel.mapped)
+        if (!monitor)
+            return false;
+        // Without the top bar, the island itself is the top bar.
+        if (this._tray)
+            return true;
+        if (!Main.panel.mapped)
             return false;
         const [, panelY] = Main.panel.get_transformed_position();
         return Math.abs(panelY - monitor.y) < 2;
@@ -272,7 +191,7 @@ export const Island = GObject.registerClass({
     // Width of the free space at the center of the top bar, i.e. how wide the
     // island can be at the top bar's height without covering any of its items
     // (workspace indicator, clock, tray icons...). 0 if something sits at the
-    // very center (e.g. GNOME's default clock).
+    // very center (e.g. GNOME's default clock). No limit without a top bar.
     _measurePanel() {
         // The top bar's height can change after the island was laid out (a
         // shell theme loading, scaling...): lay the current mode out again.
@@ -282,7 +201,7 @@ export const Island = GObject.registerClass({
 
         const monitor = Main.layoutManager.primaryMonitor;
         let gap = Infinity;
-        if (monitor && this._panelAtTop()) {
+        if (monitor && !this._tray && this._panelAtTop()) {
             const cx = monitor.x + monitor.width / 2;
             let left = monitor.x;
             let right = monitor.x + monitor.width;
@@ -305,10 +224,15 @@ export const Island = GObject.registerClass({
         if (gap === this._panelGap)
             return;
         this._panelGap = gap;
-        // Keep the header (which sits at the top bar's height) inside the top part.
-        const inset = (OPEN_WIDTH - this._neckWidth(OPEN_WIDTH)) / 2;
-        this._header.margin_left = this._header.margin_right = inset;
+        this._syncHeaderInsets();
         this._bg.queue_repaint();
+    }
+
+    // Keep the player's header (which sits at the top bar's height) inside
+    // the top part, and clear of the tab buttons.
+    _syncHeaderInsets() {
+        const inset = (OPEN_WIDTH - this._neckWidth(OPEN_WIDTH)) / 2;
+        this._music.setHeaderInsets(inset, this._tray ? Math.max(inset, TAB_BAR_WIDTH) : inset);
     }
 
     // Width of the island's top part (the part at the top bar's height). The
@@ -321,7 +245,7 @@ export const Island = GObject.registerClass({
     // Outside them, clicks go through to the top bar.
     _hitBoxes(w, h, mode) {
         const notchH = this._notchHeight;
-        if (mode === 'idle') {
+        if (mode === 'idle' && !this._tray) {
             // Invisible: only reacts where the top bar has nothing.
             const neck = Math.min(w, this._panelGap);
             return neck > 0 ? [[(w - neck) / 2, 0, (w + neck) / 2, h]] : [];
@@ -349,6 +273,7 @@ export const Island = GObject.registerClass({
         if (!monitor)
             return;
         const [w, h] = this._sizeFor(this.mode);
+        this._targetWidth = w;
         const x = Math.round(monitor.x + (monitor.width - w) / 2);
         const y = monitor.y;
         this.remove_transition('width');
@@ -370,7 +295,7 @@ export const Island = GObject.registerClass({
         const cr = area.get_context();
         const [w, h] = area.get_surface_size();
         const notchH = this._notchHeight;
-        const tall = this.mode === 'message' || this.mode === 'activity' ? this.mode : 'open';
+        const tall = ['message', 'tray', 'activity'].includes(this.mode) ? this.mode : 'open';
         const [, fullH] = this._sizeFor(tall);
         const t = clamp01((h - notchH) / Math.max(1, fullH - notchH));
         const base = RADII[tall];
@@ -475,143 +400,141 @@ export const Island = GObject.registerClass({
         return this._activities.at(-1) ?? null;
     }
 
+    // ---------- top bar replacement (public API, used by topbar.js) ----------
+
+    // tray: the actor holding the top bar's buttons, shown in the "tray" tab,
+    // or null when the top bar is back. barHeight: the top bar's height, which
+    // the island keeps as its own.
+    setTopBarReplaced(tray, barHeight = 0) {
+        if (tray === this._tray)
+            return;
+        if (this._tray)
+            this._trayRow.remove_child(this._tray);
+        this._tray = tray;
+        this._barHeight = barHeight;
+        if (tray)
+            this._trayRow.add_child(tray);
+        if (!tray && this._tab === 'tray')
+            this._tab = 'music';
+        this._holds.clear();
+        this._panelGap = undefined;
+        this._measurePanel();
+        this._syncHeaderInsets();
+        this._sync(true);
+    }
+
+    // Lay the tray tab out again if its buttons need another width (a
+    // button added, removed, shown, hidden or grown).
+    trayChanged() {
+        this._later('tray', 0, () => {
+            if (this.mode === 'tray' && this._trayWidth() !== Math.round(this._targetWidth ?? this.width))
+                this._applyGeometry(true);
+        });
+    }
+
+    // Open the island on a tab ('music' or 'tray'). Without animation, the
+    // island is at its final place and size right away (e.g. to open a menu
+    // anchored to one of its buttons).
+    openTab(tab, animate = true) {
+        if (tab === 'tray' && !this._tray)
+            return;
+        this._tab = tab;
+        if (this.status === 'closed') {
+            this._tabChosen = true;
+            this._open(animate);
+        } else {
+            this._sync(false, animate);
+        }
+    }
+
+    // While held (e.g. a menu of a tray button is open), the open island
+    // doesn't close. Released, it closes if the pointer is away.
+    hold(key, held) {
+        if (held)
+            this._holds.add(key);
+        else if (this._holds.delete(key))
+            this._handleHover();
+    }
+
     // ---------- views ----------
 
-    _buildCompact() {
-        this._compact = new St.BoxLayout({
-            style_class: 'liland-compact',
+    _buildTrayView() {
+        this._trayView = new St.BoxLayout({
+            vertical: true,
             x_expand: true,
+            y_expand: true,
             y_align: Clutter.ActorAlign.START,
             opacity: 0,
             visible: false,
         });
-        this._compactArt = new ArtworkView(20, 5);
-        this._compactEq = new EqualizerView(18, 14, this);
-        this._compact.add_child(this._compactArt);
-        this._compact.add_child(new St.Widget({x_expand: true}));
-        this._compact.add_child(this._compactEq);
-        this.add_child(this._compact);
+        this._trayView.set_pivot_point(0.5, 0);
+        this._traySpacer = new St.Widget();
+        this._trayView.add_child(this._traySpacer);
+        this._trayRow = new St.BoxLayout({
+            style_class: 'liland-tray',
+            x_align: Clutter.ActorAlign.CENTER,
+            height: TRAY_CONTENT_HEIGHT - 8,
+        });
+        this._trayView.add_child(this._trayRow);
+        this._trayRow.connect('queue-relayout', () => this.trayChanged());
+        this.add_child(this._trayView);
     }
 
-    _buildOpen() {
-        const innerWidth = OPEN_WIDTH - RADII.open[0] * 2;
-        this._openBox = new St.BoxLayout({
-            vertical: true,
-            width: innerWidth,
+    _buildClock() {
+        this._wallClock = new GnomeDesktop.WallClock({time_only: true});
+        this._clock = new St.Label({
+            style_class: 'liland-clock',
+            x_expand: true,
+            y_expand: true,
             x_align: Clutter.ActorAlign.CENTER,
             y_align: Clutter.ActorAlign.START,
             opacity: 0,
             visible: false,
         });
-        this._openBox.set_pivot_point(0.5, 0);
-
-        // Header: "Now Playing" + app icon.
-        const header = new St.BoxLayout({style_class: 'liland-header'});
-        this._statusLabel = new St.Label({style_class: 'liland-status', y_align: Clutter.ActorAlign.CENTER});
-        this._appButton = new St.Button({style_class: 'liland-app-button', y_align: Clutter.ActorAlign.CENTER, can_focus: false});
-        this._appButton.connect('clicked', () => this._raisePlayer());
-        header.add_child(this._statusLabel);
-        header.add_child(new St.Widget({x_expand: true}));
-        header.add_child(this._appButton);
-        this._header = header;
-        this._openBox.add_child(header);
-
-        const body = new St.BoxLayout({vertical: true, style_class: 'liland-body'});
-        this._openBox.add_child(body);
-
-        // Track info.
-        const info = new St.BoxLayout({style_class: 'liland-info'});
-        const artButton = new St.Button({can_focus: false, y_align: Clutter.ActorAlign.CENTER});
-        this._openArt = new ArtworkView(56, 10);
-        artButton.set_child(this._openArt);
-        artButton.connect('clicked', () => this._raisePlayer());
-        const texts = new St.BoxLayout({vertical: true, x_expand: true, y_align: Clutter.ActorAlign.CENTER, style_class: 'liland-texts'});
-        this._titleLabel = new St.Label({style_class: 'liland-title'});
-        this._artistLabel = new St.Label({style_class: 'liland-artist'});
-        for (const l of [this._titleLabel, this._artistLabel])
-            l.clutter_text.ellipsize = Pango.EllipsizeMode.END;
-        texts.add_child(this._titleLabel);
-        texts.add_child(this._artistLabel);
-        this._openEq = new EqualizerView(22, 24, this);
-        info.add_child(artButton);
-        info.add_child(texts);
-        info.add_child(this._openEq);
-        body.add_child(info);
-
-        // Progress.
-        const progress = new St.BoxLayout({style_class: 'liland-progress', height: 14});
-        this._elapsedLabel = new St.Label({style_class: 'liland-time', y_align: Clutter.ActorAlign.CENTER});
-        this._remainingLabel = new St.Label({style_class: 'liland-time', y_align: Clutter.ActorAlign.CENTER});
-        this._track = new St.Widget({
-            reactive: true, x_expand: true, height: 14,
-            layout_manager: new Clutter.BinLayout(),
-        });
-        this._trackBg = new St.Widget({style_class: 'liland-track-bg', x_expand: true, height: 4, y_align: Clutter.ActorAlign.CENTER});
-        this._trackFill = new St.Widget({style_class: 'liland-track-fill', height: 4});
-        this._trackBg.add_child(this._trackFill);
-        this._track.add_child(this._trackBg);
-        this._track.connect('button-press-event', (_a, event) => this._beginDrag(event));
-        this._liveLabel = new St.Label({text: _('Live'), style_class: 'liland-live', y_align: Clutter.ActorAlign.CENTER});
-        progress.add_child(this._elapsedLabel);
-        progress.add_child(this._track);
-        progress.add_child(this._remainingLabel);
-        progress.add_child(this._liveLabel);
-        body.add_child(progress);
-
-        // Controls.
-        const controls = new St.BoxLayout({style_class: 'liland-controls', x_align: Clutter.ActorAlign.CENTER, height: 30});
-        this._shuffleBtn = controlButton('media-playlist-shuffle-symbolic', 14, () => this.nowPlaying.toggleShuffle());
-        this._prevBtn = controlButton('media-skip-backward-symbolic', 18, () => this.nowPlaying.previous());
-        this._playBtn = controlButton('media-playback-start-symbolic', 26, () => this.nowPlaying.playPause());
-        this._nextBtn = controlButton('media-skip-forward-symbolic', 18, () => this.nowPlaying.next());
-        this._repeatBtn = controlButton('media-playlist-repeat-symbolic', 14, () => this.nowPlaying.cycleRepeat());
-        for (const b of [this._shuffleBtn, this._prevBtn, this._playBtn, this._nextBtn, this._repeatBtn])
-            controls.add_child(b);
-        body.add_child(controls);
-
-        this.add_child(this._openBox);
+        this._clock.clutter_text.y_align = Clutter.ActorAlign.CENTER;
+        const syncClock = () => {
+            this._clock.text = this._wallClock.clock.trim();
+        };
+        this._wallClockId = this._wallClock.connect('notify::clock', syncClock);
+        syncClock();
+        this.add_child(this._clock);
     }
 
-    _buildMessage() {
-        const innerWidth = OPEN_WIDTH - RADII.message[0] * 2;
-        this._messageBox = new St.BoxLayout({
-            vertical: true,
-            width: innerWidth,
-            x_align: Clutter.ActorAlign.CENTER,
+    _buildTabBar() {
+        this._tabBar = new St.BoxLayout({
+            style_class: 'liland-tabs',
+            // BinLayout only honors the alignment of expanding children.
+            x_expand: true,
+            y_expand: true,
+            x_align: Clutter.ActorAlign.END,
             y_align: Clutter.ActorAlign.START,
             opacity: 0,
             visible: false,
         });
-        this._messageBox.set_pivot_point(0.5, 0);
-        this._messageSpacer = new St.Widget();
-        this._messageBox.add_child(this._messageSpacer);
-        const row = new St.BoxLayout({style_class: 'liland-message', height: MESSAGE_CONTENT_HEIGHT - 6});
-        const iconBin = new St.Bin({
-            style_class: 'liland-message-icon',
-            child: new St.Icon({icon_name: 'audio-x-generic-symbolic', icon_size: 18}),
-            y_align: Clutter.ActorAlign.CENTER,
-        });
-        const texts = new St.BoxLayout({vertical: true, x_expand: true, y_align: Clutter.ActorAlign.CENTER, style_class: 'liland-texts'});
-        texts.add_child(new St.Label({text: _('Nothing playing'), style_class: 'liland-message-title'}));
-        texts.add_child(new St.Label({text: _('Play music in any app or browser'), style_class: 'liland-message-subtitle'}));
-        this._messageAction = new St.Button({style_class: 'liland-message-button', y_align: Clutter.ActorAlign.CENTER, can_focus: false});
-        this._messageAction.connect('clicked', () => {
-            this._preferredApp?.activate();
-            this._close();
-        });
-        row.add_child(iconBin);
-        row.add_child(texts);
-        row.add_child(this._messageAction);
-        this._messageBox.add_child(row);
-        this.add_child(this._messageBox);
+        this._tabButtons = {};
+        for (const [tab, icon] of [['music', 'audio-x-generic-symbolic'], ['tray', 'view-app-grid-symbolic']]) {
+            const button = new St.Button({
+                style_class: 'liland-tab',
+                child: new St.Icon({icon_name: icon, icon_size: 14}),
+                y_align: Clutter.ActorAlign.CENTER,
+                can_focus: false,
+            });
+            button.connect('clicked', () => this.openTab(tab));
+            this._tabButtons[tab] = button;
+            this._tabBar.add_child(button);
+        }
+        this.add_child(this._tabBar);
     }
 
     // ---------- state ----------
 
     _computeMode() {
         const hasTrack = this.nowPlaying.track !== null;
-        if (this.status === 'open')
+        if (this.status === 'open') {
+            if (this._tab === 'tray' && this._tray)
+                return 'tray';
             return hasTrack ? 'open' : 'message';
+        }
         if (this._activity)
             return 'activity';
         return hasTrack && this.nowPlaying.isPlaying ? 'compact' : 'idle';
@@ -620,120 +543,48 @@ export const Island = GObject.registerClass({
     _contentFor(mode) {
         if (mode === 'activity')
             return this._activity?.actor ?? null;
-        return {compact: this._compact, open: this._openBox, message: this._messageBox}[mode] ?? null;
+        return {
+            compact: this._music.compactActor,
+            open: this._music.openActor,
+            message: this._music.emptyActor,
+            tray: this._trayView,
+        }[mode] ?? null;
     }
 
-    _sync(initial = false) {
-        const np = this.nowPlaying;
-        const track = np.track;
-
-        // Views' data.
-        this._compactArt.setPath(np.artworkPath);
-        this._openArt.setPath(np.artworkPath);
-        this._titleLabel.text = track?.title ?? '';
-        this._artistLabel.text = track?.artist ?? '';
-        this._statusLabel.text = np.isPlaying ? _('Now Playing') : _('Paused');
-        this._playBtn.icon.icon_name = np.isPlaying ? 'media-playback-pause-symbolic' : 'media-playback-start-symbolic';
-        this._setModeButton(this._shuffleBtn, np.isShuffling);
-        const repeat = np.repeatMode;
-        this._repeatBtn.icon.icon_name = repeat === 'one' ? 'media-playlist-repeat-song-symbolic' : 'media-playlist-repeat-symbolic';
-        this._setModeButton(this._repeatBtn, repeat === null ? null : repeat !== 'off');
-        this._trackFill.style = `background-color: ${rgbCss([1, 1, 1])};`;
-        this._syncAppIcon();
-        this._syncMessageAction();
-        this._syncPlaying();
-
+    _sync(initial = false, animate = !initial) {
+        this._music.sync();
         const mode = this._computeMode();
         // Also when one activity replaces another (the mode stays 'activity').
         if (mode !== this.mode || initial || this._contentFor(mode) !== this._shownContent) {
             const previous = this.mode;
             this.mode = mode;
-            this._transition(previous, mode, !initial);
+            this._transition(previous, mode, animate);
         }
-        this._updateProgress();
-        this._updateTicker();
+        this._music.setMode(this.mode);
+        this._syncTabs();
     }
 
-    _setModeButton(button, isOn) {
-        button.reactive = isOn !== null;
-        button.opacity = isOn === null ? 0 : 255;
-        const color = isOn ? rgbCss(this.nowPlaying.accentColor) : 'rgba(255,255,255,0.5)';
-        button.icon.style = `color: ${color};`;
-    }
-
-    _syncAppIcon() {
-        const player = this.nowPlaying.activePlayer;
-        const app = this._appFor(player);
-        if (app) {
-            this._appButton.set_child(app.create_icon_texture(16));
-            this._appButton.visible = true;
-        } else {
-            this._appButton.visible = false;
+    _syncTabs() {
+        for (const [tab, button] of Object.entries(this._tabButtons)) {
+            if (tab === this._tab)
+                button.add_style_pseudo_class('checked');
+            else
+                button.remove_style_pseudo_class('checked');
         }
-    }
-
-    _appFor(player) {
-        if (!player?.desktopEntry)
-            return null;
-        const sys = Shell.AppSystem.get_default();
-        return sys.lookup_app(`${player.desktopEntry}.desktop`) ??
-            sys.lookup_app(`${player.desktopEntry.toLowerCase()}.desktop`) ?? null;
-    }
-
-    _syncMessageAction() {
-        const sys = Shell.AppSystem.get_default();
-        let app = null;
-        for (const id of SPOTIFY_IDS) {
-            app = sys.lookup_app(id);
-            if (app)
-                break;
-        }
-        if (!app) {
-            for (const p of this.nowPlaying.players.values()) {
-                app = this._appFor(p);
-                if (app)
-                    break;
-            }
-        }
-        this._preferredApp = app;
-        this._messageAction.visible = Boolean(app);
-        if (app)
-            this._messageAction.label = _('Open %s').replace('%s', app.get_name());
-    }
-
-    _raisePlayer() {
-        const player = this.nowPlaying.activePlayer;
-        const app = this._appFor(player);
-        if (app)
-            app.activate();
-        else
-            player?.raise();
-    }
-
-    _syncPlaying() {
-        const playing = this.nowPlaying.isPlaying;
-        const target = playing ? 1 : 0;
-        if (this._playTarget === target)
-            return;
-        this._playTarget = target;
-        this._playFrom = this.playFactor;
-        this._playStart = GLib.get_monotonic_time();
-        this._levels.follow(playing);
     }
 
     _transition(from, to, animate) {
-        if (from === 'open' && to !== 'open')
-            this._endDrag(false);
         const oldContent = this._shownContent;
         const newContent = this._contentFor(to);
         this._shownContent = newContent;
         const notchH = this._notchHeight;
         this._laidOutNotchH = notchH;
-        this._header.height = notchH;
-        this._messageSpacer.height = notchH;
-        this._compact.height = notchH;
+        this._music.setNotchHeight(notchH);
+        this._traySpacer.height = notchH;
+        this._clock.height = notchH;
+        this._tabBar.height = notchH;
         const topR = (RADII[to] ?? RADII.idle)[0];
-        this._compact.style = `padding: 0 ${10 + topR}px;`;
+        this._music.setCompactPadding(10 + topR);
 
         if (oldContent && oldContent !== newContent) {
             oldContent.remove_all_transitions();
@@ -758,9 +609,8 @@ export const Island = GObject.registerClass({
             newContent.remove_all_transitions();
             newContent.show();
             if (animate) {
-                if (to !== 'compact') {
+                if (to !== 'compact')
                     newContent.scale_x = newContent.scale_y = 0.85;
-                }
                 newContent.ease({
                     opacity: 255, scale_x: 1, scale_y: 1,
                     delay: 50,
@@ -773,131 +623,49 @@ export const Island = GObject.registerClass({
             }
         }
 
-        // Without a physical notch, the idle island is invisible (like Liland on Macs without a notch).
+        // Replacing the top bar, the island always shows the time (alone
+        // when idle, between the artwork and the equalizer when compact) and,
+        // open, the tab buttons.
+        const replaced = Boolean(this._tray);
+        this._setShown(this._clock, replaced && (to === 'idle' || to === 'compact'), animate);
+        this._setShown(this._tabBar, replaced && ['open', 'message', 'tray'].includes(to), animate);
+
+        // Without a physical notch (and with the top bar there), the idle
+        // island is invisible (like Liland on Macs without a notch).
         this._bg.remove_all_transitions();
         this._bg.ease({
-            opacity: to === 'idle' ? 0 : 255,
+            opacity: to === 'idle' && !replaced ? 0 : 255,
             duration: animate ? 250 : 0,
             mode: Clutter.AnimationMode.EASE_OUT_QUAD,
         });
         this._applyGeometry(animate);
     }
 
-    // ---------- progress ----------
-
-    _updateProgress() {
-        if (this.mode !== 'open')
+    _setShown(actor, shown, animate) {
+        if (actor._lilandShown === shown)
             return;
-        const np = this.nowPlaying;
-        const duration = np.track?.duration ?? 0;
-        const position = this._dragFraction !== undefined ? this._dragFraction * duration : np.elapsed();
-        this._elapsedLabel.text = formatTime(position);
-        const hasDuration = duration > 0;
-        this._remainingLabel.visible = hasDuration;
-        this._liveLabel.visible = !hasDuration;
-        this._trackFill.visible = hasDuration;
-        this._track.reactive = hasDuration && np.activePlayer?.snapshot?.canSeek !== false;
-        if (!hasDuration)
-            return;
-        this._remainingLabel.text = `-${formatTime(duration - position)}`;
-        const width = this._track.width;
-        if (width > 0)
-            this._trackFill.width = Math.max(0, Math.round(width * clamp01(position / duration)));
-        const barH = this._dragFraction !== undefined ? 6 : 4;
-        this._trackBg.height = barH;
-        this._trackFill.height = barH;
-    }
-
-    _fractionAt(x) {
-        const [tx] = this._track.get_transformed_position();
-        return clamp01((x - tx) / Math.max(1, this._track.width));
-    }
-
-    _beginDrag(event) {
-        if (event.get_button() !== Clutter.BUTTON_PRIMARY || this._dragId)
-            return Clutter.EVENT_PROPAGATE;
-        const [x] = event.get_coords();
-        this._isInteracting = true;
-        this._dragFraction = this._fractionAt(x);
-        this._updateProgress();
-        this._dragId = global.stage.connect('captured-event', (_s, ev) => {
-            const type = ev.type();
-            if (type === Clutter.EventType.MOTION) {
-                // The release went somewhere else (overview, lock screen,
-                // another grab): drop the drag without seeking.
-                if (!(ev.get_state() & Clutter.ModifierType.BUTTON1_MASK)) {
-                    this._endDrag();
-                    return Clutter.EVENT_PROPAGATE;
-                }
-                this._dragFraction = this._fractionAt(ev.get_coords()[0]);
-                this._updateProgress();
-                return Clutter.EVENT_STOP;
-            }
-            if (type === Clutter.EventType.BUTTON_RELEASE && ev.get_button() === Clutter.BUTTON_PRIMARY) {
-                const fraction = this._fractionAt(ev.get_coords()[0]);
-                const duration = this.nowPlaying.track?.duration ?? 0;
-                this.nowPlaying.seek(fraction * duration);
-                this._endDrag();
-                return Clutter.EVENT_STOP;
-            }
-            return Clutter.EVENT_PROPAGATE;
-        });
-        this._overviewId = Main.overview.connect('showing', () => this._endDrag());
-        return Clutter.EVENT_STOP;
-    }
-
-    _endDrag(checkHover = true) {
-        if (!this._dragId)
-            return;
-        global.stage.disconnect(this._dragId);
-        this._dragId = 0;
-        Main.overview.disconnect(this._overviewId);
-        this._overviewId = 0;
-        this._dragFraction = undefined;
-        this._isInteracting = false;
-        this._updateProgress();
-        if (checkHover)
-            this._handleHover();
-    }
-
-    // ---------- animation ticker (equalizers + progress) ----------
-
-    _needsTicker() {
-        return this.mode !== 'idle' && this.mode !== 'activity' && (this._playTarget === 1 || this.playFactor > 0.001 || this.mode === 'open');
-    }
-
-    _updateTicker() {
-        const needs = this._needsTicker();
-        if (needs && !this._tickId) {
-            this._tickId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => this._tick());
-        } else if (!needs) {
-            if (this._tickId)
-                GLib.source_remove(this._tickId);
-            this._tickId = 0;
-            // Nothing animates the bars anymore: land on the target so the
-            // next play/pause eases from the right place.
-            this.playFactor = this._playTarget ?? 0;
+        actor._lilandShown = shown;
+        actor.remove_transition('opacity');
+        if (shown) {
+            actor.show();
+            if (animate)
+                actor.ease({opacity: 255, delay: 80, duration: 250, mode: Clutter.AnimationMode.EASE_OUT_QUAD});
+            else
+                actor.opacity = 255;
+        } else if (animate) {
+            actor.ease({
+                opacity: 0,
+                duration: 120,
+                mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+                onComplete: () => {
+                    if (!actor._lilandShown)
+                        actor.hide();
+                },
+            });
+        } else {
+            actor.opacity = 0;
+            actor.hide();
         }
-    }
-
-    _tick() {
-        const elapsed = (GLib.get_monotonic_time() - (this._playStart ?? 0)) / 1e6;
-        const t = clamp01(elapsed / 0.5);
-        const eased = 1 - Math.pow(1 - t, 3);
-        this.playFactor = lerp(this._playFrom ?? 0, this._playTarget ?? 0, eased);
-        if (this.mode === 'compact')
-            this._compactEq.queue_repaint();
-        if (this.mode === 'open') {
-            this._openEq.queue_repaint();
-            this._progressCounter = ((this._progressCounter ?? 0) + 1) % 15;
-            if (this._progressCounter === 0 || this._dragFraction !== undefined)
-                this._updateProgress();
-        }
-        if (this._needsTicker())
-            return GLib.SOURCE_CONTINUE;
-        this._tickId = 0;
-        this.playFactor = this._playTarget ?? 0;
-        return GLib.SOURCE_REMOVE;
     }
 
     // ---------- hover / open / close (same logic as NotchWindowController) ----------
@@ -931,6 +699,10 @@ export const Island = GObject.registerClass({
             py >= oy + y1 - margin && py <= oy + y2 + margin);
     }
 
+    get _isHeld() {
+        return this._music.isInteracting || this._isPeeking || this._holds.size > 0;
+    }
+
     _handleHover() {
         const hover = this.hover;
         if (this.status === 'closed' && this.mode === 'activity') {
@@ -952,14 +724,14 @@ export const Island = GObject.registerClass({
         if (hover) {
             this._cancel('close');
             this._endPeek();
-        } else if (!this._isInteracting && !this._isPeeking) {
+        } else if (!this._isHeld) {
             this._scheduleClose();
         }
     }
 
     _scheduleClose() {
         this._later('close', CLOSE_DELAY, () => {
-            if (this.hover || this._isInteracting || this._isPeeking)
+            if (this.hover || this._isHeld)
                 return;
             if (this._pointerNear(10)) {
                 this._scheduleClose();
@@ -969,13 +741,17 @@ export const Island = GObject.registerClass({
         });
     }
 
-    _open() {
+    _open(animate = true) {
         this._cancel('close');
         if (this.status !== 'closed')
             return;
         this.status = 'open';
+        // Without music, the top bar's buttons are what the island has to offer.
+        if (!this._tabChosen)
+            this._tab = this.nowPlaying.track === null && this._tray ? 'tray' : 'music';
+        this._tabChosen = false;
         this.nowPlaying.refresh();
-        this._sync();
+        this._sync(false, animate);
         // Activities under the player aren't visible anymore.
         this.emit('activity-changed');
         this._handleHover();
@@ -984,6 +760,7 @@ export const Island = GObject.registerClass({
     _close() {
         this._cancel('open');
         this._endPeek();
+        this._tabChosen = false;
         if (this.status === 'closed')
             return;
         this.status = 'closed';
@@ -995,6 +772,8 @@ export const Island = GObject.registerClass({
         if (!this._settings.get_boolean('peek-on-track-change') || this.status !== 'closed' || this._activity)
             return;
         this._isPeeking = true;
+        this._tab = 'music';
+        this._tabChosen = true;
         this._open();
         this._later('peek', PEEK_DURATION, () => {
             if (!this._isPeeking)
@@ -1012,17 +791,22 @@ export const Island = GObject.registerClass({
     destroy() {
         for (const name of Object.keys(this._timeouts))
             this._cancel(name);
-        if (this._tickId)
-            GLib.source_remove(this._tickId);
-        this._tickId = 0;
-        this._endDrag(false);
         for (const [obj, id] of this._panelSignals)
             obj.disconnect(id);
+        for (const id of this._musicSignals)
+            this._music.disconnect(id);
+        this._music.destroy();
+        this._wallClock.disconnect(this._wallClockId);
+        this._wallClock.run_dispose();
+        this._wallClock = null;
         this.nowPlaying.disconnect(this._npChangedId);
         this.nowPlaying.disconnect(this._npTrackId);
-        this._levels.disconnect(this._levelsId);
-        this._levels.disconnect(this._levelsStopId);
         Main.layoutManager.disconnect(this._monitorsId);
+        // The tray's buttons are the top bar's: topbar.js takes them back
+        // before the island goes; don't destroy them with it.
+        if (this._tray)
+            this._trayRow.remove_child(this._tray);
+        this._tray = null;
         super.destroy();
     }
 });

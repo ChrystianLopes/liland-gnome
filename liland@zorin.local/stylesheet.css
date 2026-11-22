@@ -66,3 +66,36 @@
     background-color: rgba(255,255,255,0.14);
 }
 .liland-notif-action:hover { background-color: rgba(255,255,255,0.24); }
+
+/* Replacing the top bar: time, tabs and the top bar's buttons. */
+.liland-clock { font-size: 13px; font-weight: 600; color: #ffffff; }
+
+.liland-tabs { spacing: 2px; padding-right: 22px; } /* clear of the open island's side wall */
+.liland-tab {
+    color: rgba(255,255,255,0.45);
+    padding: 4px 7px; border-radius: 99px;
+    transition-duration: 150ms;
+}
+.liland-tab:hover { color: rgba(255,255,255,0.8); background-color: rgba(255,255,255,0.08); }
+.liland-tab:checked { color: #ffffff; background-color: rgba(255,255,255,0.16); }
+
+.liland-tray { padding-bottom: 4px; }
+.liland-tray-items { spacing: 4px; }
+/* Outside #panel the theme doesn't style these anymore. */
+.liland-tray .panel-button {
+    color: #ffffff;
+    font-weight: bold;
+    border-radius: 99px;
+    border: 3px solid transparent;
+    -natural-hpadding: 10px;
+    -minimum-hpadding: 6px;
+    transition-duration: 150ms;
+}
+.liland-tray .panel-button:hover { background-color: rgba(255,255,255,0.14); }
+.liland-tray .panel-button:active,
+.liland-tray .panel-button:checked,
+.liland-tray .panel-button:focus { background-color: rgba(255,255,255,0.22); }
+.liland-tray .system-status-icon,
+.liland-tray .app-menu-icon { icon-size: 16px; padding: 0 4px; color: #ffffff; }
+.liland-tray .panel-status-indicators-box,
+.liland-tray .panel-status-menu-box { spacing: 2px; }
