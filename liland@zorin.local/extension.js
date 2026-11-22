@@ -11,6 +11,8 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import {NowPlaying} from './mpris.js';
 import {LiveLevels} from './levels.js';
 import {Island} from './island.js';
+import {OsdActivity} from './activities/osd.js';
+import {NotificationActivity} from './activities/notifications.js';
 import {_} from './i18n.js';
 
 export default class LilandExtension extends Extension {
@@ -20,6 +22,8 @@ export default class LilandExtension extends Extension {
         this._levels = new LiveLevels(this.path, this._settings);
         this._island = new Island(this._nowPlaying, this._settings, this._levels);
         Main.layoutManager.addTopChrome(this._island, {affectsInputRegion: true, trackFullscreen: true});
+        this._osd = new OsdActivity(this._island, this._settings);
+        this._notifications = new NotificationActivity(this._island, this._settings);
 
         this._indicatorId = this._settings.connect('changed::show-indicator', () => this._syncIndicator());
         this._syncIndicator();
@@ -56,6 +60,8 @@ export default class LilandExtension extends Extension {
         clickItem.connect('destroy', () => s.disconnect(clickId));
         menu.addMenuItem(clickItem);
         menu.addMenuItem(this._switch(_('Equalizer Follows the Music'), 'equalizer-follows-music'));
+        menu.addMenuItem(this._switch(_('Volume and Brightness in the Island'), 'osd-in-island'));
+        menu.addMenuItem(this._switch(_('Notifications in the Island'), 'notifications-in-island'));
 
         menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         const quit = new PopupMenu.PopupMenuItem(_('Quit Liland'));
@@ -87,6 +93,11 @@ export default class LilandExtension extends Extension {
         this._settings.disconnect(this._indicatorId);
         this._indicator?.destroy();
         this._indicator = null;
+        // Activities first: they give GNOME its OSD and banners back.
+        this._notifications.destroy();
+        this._notifications = null;
+        this._osd.destroy();
+        this._osd = null;
         Main.layoutManager.removeChrome(this._island);
         this._island.destroy();
         this._island = null;

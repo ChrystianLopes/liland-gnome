@@ -7,6 +7,17 @@ quando tem música tocando, o centro da barra superior vira uma ilha preta com a
 passando o mouse por cima, ela abre um player com a música, o artista, a barra de progresso (dá pra arrastar) e os controles,
 incluindo aleatório e repetir quando o app informa esses modos.
 
+a ilha também mostra **atividades ao vivo**, como no iphone:
+
+- **volume e brilho**: ao mudar o volume ou o brilho (teclas, rolagem no ícone de som), o nível aparece numa pílula
+  na ilha em vez do aviso no meio da tela.
+- **notificações**: chegam na ilha (app, título, texto e até 2 botões de ação). passar o mouse por cima segura a
+  notificação na tela; clicar abre o app. se chegarem várias, aparecem uma de cada vez.
+
+o "não perturbe", a tela cheia e as preferências de notificação de cada app continuam valendo. o que a ilha não mostra
+fica com o gnome: notificações **críticas** (ex.: bateria fraca), avisos sem nível (ex.: caps lock) e qualquer coisa
+quando a ilha não está visível (tela cheia, outro monitor).
+
 funciona com qualquer player que fale **MPRIS**: spotify, firefox, chrome/chromium, youtube, deezer web, tidal, vlc, rhythmbox, etc.
 não precisa de login nem de permissão extra.
 
@@ -42,6 +53,8 @@ ficam no ícone de cápsula da barra superior:
   como ele escuta a **saída** de áudio (não o microfone), o stream se identifica como medidor de volume
   (`org.gnome.VolumeControl`) para o gnome não mostrar o ícone de "microfone em uso". se preferir ver o ícone,
   é só deixar essa opção desligada (é o padrão).
+- **volume e brilho na ilha** / **notificações na ilha** ligam e desligam cada atividade (desligado, volta o aviso
+  normal do gnome).
 - **sair do liland** desativa a extensão (reative com `gnome-extensions enable liland@zorin.local`).
 
 pra esconder o ícone da barra: `gsettings --schemadir ~/.local/share/gnome-shell/extensions/liland@zorin.local/schemas set org.gnome.shell.extensions.liland show-indicator false`
@@ -51,7 +64,9 @@ pra esconder o ícone da barra: `gsettings --schemadir ~/.local/share/gnome-shel
 | arquivo | o que faz |
 | --- | --- |
 | `extension.js` | liga tudo e monta o menu da cápsula |
-| `island.js` | a ilha: forma de notch, modos idle/compacto/aberto/mensagem, animações, hover e clique |
+| `island.js` | a ilha: forma de notch, modos idle/compacto/aberto/mensagem/atividade, animações, hover e clique |
+| `activities/osd.js` | volume/brilho na ilha (assume o `Main.osdWindowManager.show` do gnome) |
+| `activities/notifications.js` | notificações na ilha (assume o `MessageTray._showNotification` do gnome) |
 | `mpris.js` | lê todos os players MPRIS pelo D-Bus, escolhe o ativo, baixa a capa e tira a cor de destaque |
 | `levels.js` + `levels.py` | equalizador real: espectro do áudio em 6 faixas com faixa dinâmica adaptativa |
 

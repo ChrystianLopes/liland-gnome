@@ -13,8 +13,8 @@ import {_} from './i18n.js';
 // Same numbers as Liland's NotchGeometry / NotchMode.
 const NOTCH_WIDTH = 190;
 const COMPACT_WING = 42;
-const COMPACT_WIDTH = NOTCH_WIDTH + COMPACT_WING * 2;
-const OPEN_WIDTH = 480;
+export const COMPACT_WIDTH = NOTCH_WIDTH + COMPACT_WING * 2;
+export const OPEN_WIDTH = 480;
 const OPEN_CONTENT_HEIGHT = 140;
 const MESSAGE_CONTENT_HEIGHT = 70;
 const RADII = {
@@ -22,6 +22,7 @@ const RADII = {
     compact: [6, 12],
     open: [18, 28],
     message: [16, 24],
+    activity: [16, 24],
 };
 const OPEN_DELAY = 100;
 const CLOSE_DELAY = 150;
@@ -157,8 +158,12 @@ function controlButton(iconName, size, onClick) {
     return button;
 }
 
-export const Island = GObject.registerClass(
-class LilandIsland extends St.Widget {
+export const Island = GObject.registerClass({
+    Signals: {
+        // The activity on top changed (shown, replaced or hidden).
+        'activity-changed': {},
+    },
+}, class LilandIsland extends St.Widget {
     _init(nowPlaying, settings, levels) {
         super._init({
             name: 'liland-island',
@@ -178,6 +183,11 @@ class LilandIsland extends St.Widget {
         this._isPeeking = false;
         this._timeouts = {};
         this._panelGap = Infinity;
+        // Temporary content (volume/brightness, notifications...) shown
+        // instead of the music views; see showActivity(). The last one shown
+        // is on top; when it ends, the one below shows again.
+        this._activities = [];
+        this._shownContent = null;
 
         this._bg = new St.DrawingArea({x_expand: true, y_expand: true});
         this._bg.connect('repaint', area => this._drawShape(area));
@@ -238,6 +248,7 @@ class LilandIsland extends St.Widget {
         case 'compact': return [NOTCH_WIDTH + COMPACT_WING * 2, h];
         case 'open': return [OPEN_WIDTH, h + OPEN_CONTENT_HEIGHT];
         case 'message': return [OPEN_WIDTH, h + MESSAGE_CONTENT_HEIGHT];
+        case 'activity': return [this._activity?.width ?? COMPACT_WIDTH, h + (this._activity?.contentHeight ?? 0)];
         default: return [NOTCH_WIDTH, h];
         }
     }
@@ -263,6 +274,12 @@ class LilandIsland extends St.Widget {
     // (workspace indicator, clock, tray icons...). 0 if something sits at the
     // very center (e.g. GNOME's default clock).
     _measurePanel() {
+        // The top bar's height can change after the island was laid out (a
+        // shell theme loading, scaling...): lay the current mode out again.
+        const notchH = this._notchHeight;
+        if (this._laidOutNotchH !== undefined && notchH !== this._laidOutNotchH)
+            this._transition(this.mode, this.mode, false);
+
         const monitor = Main.layoutManager.primaryMonitor;
         let gap = Infinity;
         if (monitor && this._panelAtTop()) {
@@ -353,9 +370,10 @@ class LilandIsland extends St.Widget {
         const cr = area.get_context();
         const [w, h] = area.get_surface_size();
         const notchH = this._notchHeight;
-        const [, fullH] = this._sizeFor(this.mode === 'message' ? 'message' : 'open');
+        const tall = this.mode === 'message' || this.mode === 'activity' ? this.mode : 'open';
+        const [, fullH] = this._sizeFor(tall);
         const t = clamp01((h - notchH) / Math.max(1, fullH - notchH));
-        const base = this.mode === 'message' ? RADII.message : RADII.open;
+        const base = RADII[tall];
         const small = this.mode === 'idle' ? RADII.idle : RADII.compact;
         const neck = this._neckWidth(w);
         // f: how much the body sticks out on each side of the top part.
@@ -389,6 +407,72 @@ class LilandIsland extends St.Widget {
         cr.setSourceRGBA(0, 0, 0, 1);
         cr.fill();
         cr.$dispose();
+    }
+
+    // ---------- activities (public API) ----------
+
+    get notchHeight() {
+        return this._notchHeight;
+    }
+
+    // Width of the part of a w-wide island that sits at the top bar's height.
+    neckWidth(w) {
+        return this._neckWidth(w);
+    }
+
+    // Whether an activity shown now would actually be seen; if not, the
+    // caller should fall back to GNOME's own UI.
+    canShowActivity() {
+        const monitor = Main.layoutManager.primaryMonitor;
+        return Boolean(monitor) && !monitor.inFullscreen && this._panelAtTop() &&
+            this.status === 'closed' && this.visible;
+    }
+
+    // activity: {actor, width, contentHeight}. The actor is laid out at the
+    // top center of the island; its first notchHeight pixels are at the top
+    // bar's height (keep that part within neckWidth(width)).
+    showActivity(activity) {
+        if (activity.actor.get_parent() !== this) {
+            activity.actor.set({x_align: Clutter.ActorAlign.CENTER, y_align: Clutter.ActorAlign.START, opacity: 0});
+            activity.actor.hide();
+            this.add_child(activity.actor);
+        }
+        if (this._activity === activity) {
+            this.updateActivity(activity);
+            return;
+        }
+        this._activities = this._activities.filter(a => a !== activity);
+        this._activities.push(activity);
+        this._sync();
+        this.emit('activity-changed');
+    }
+
+    // Call after changing an activity's size while it is shown.
+    updateActivity(activity) {
+        if (this._activity === activity && this.mode === 'activity')
+            this._applyGeometry(true);
+    }
+
+    hideActivity(activity) {
+        const wasOnTop = this._activity === activity;
+        this._activities = this._activities.filter(a => a !== activity);
+        if (wasOnTop) {
+            this._sync();
+            this.emit('activity-changed');
+            // The pointer may have stayed over the island the whole time:
+            // it can open the player now.
+            if (this.mode !== 'activity' && this.hover)
+                this._handleHover();
+        }
+    }
+
+    // The activity on top (the one the island shows), or null.
+    get activity() {
+        return this._activity;
+    }
+
+    get _activity() {
+        return this._activities.at(-1) ?? null;
     }
 
     // ---------- views ----------
@@ -528,10 +612,14 @@ class LilandIsland extends St.Widget {
         const hasTrack = this.nowPlaying.track !== null;
         if (this.status === 'open')
             return hasTrack ? 'open' : 'message';
+        if (this._activity)
+            return 'activity';
         return hasTrack && this.nowPlaying.isPlaying ? 'compact' : 'idle';
     }
 
     _contentFor(mode) {
+        if (mode === 'activity')
+            return this._activity?.actor ?? null;
         return {compact: this._compact, open: this._openBox, message: this._messageBox}[mode] ?? null;
     }
 
@@ -556,7 +644,8 @@ class LilandIsland extends St.Widget {
         this._syncPlaying();
 
         const mode = this._computeMode();
-        if (mode !== this.mode || initial) {
+        // Also when one activity replaces another (the mode stays 'activity').
+        if (mode !== this.mode || initial || this._contentFor(mode) !== this._shownContent) {
             const previous = this.mode;
             this.mode = mode;
             this._transition(previous, mode, !initial);
@@ -635,9 +724,11 @@ class LilandIsland extends St.Widget {
     _transition(from, to, animate) {
         if (from === 'open' && to !== 'open')
             this._endDrag(false);
-        const oldContent = this._contentFor(from);
+        const oldContent = this._shownContent;
         const newContent = this._contentFor(to);
+        this._shownContent = newContent;
         const notchH = this._notchHeight;
+        this._laidOutNotchH = notchH;
         this._header.height = notchH;
         this._messageSpacer.height = notchH;
         this._compact.height = notchH;
@@ -654,7 +745,7 @@ class LilandIsland extends St.Widget {
                     duration: 150,
                     mode: Clutter.AnimationMode.EASE_OUT_QUAD,
                     onComplete: () => {
-                        if (this._contentFor(this.mode) !== oldContent)
+                        if (this._shownContent !== oldContent)
                             oldContent.hide();
                     },
                 });
@@ -772,7 +863,7 @@ class LilandIsland extends St.Widget {
     // ---------- animation ticker (equalizers + progress) ----------
 
     _needsTicker() {
-        return this.mode !== 'idle' && (this._playTarget === 1 || this.playFactor > 0.001 || this.mode === 'open');
+        return this.mode !== 'idle' && this.mode !== 'activity' && (this._playTarget === 1 || this.playFactor > 0.001 || this.mode === 'open');
     }
 
     _updateTicker() {
@@ -842,6 +933,12 @@ class LilandIsland extends St.Widget {
 
     _handleHover() {
         const hover = this.hover;
+        if (this.status === 'closed' && this.mode === 'activity') {
+            // Hovering an activity keeps it (the activity pauses its own
+            // timer); it doesn't open the player.
+            this._cancel('open');
+            return;
+        }
         if (this.status === 'closed') {
             if (!this._settings.get_boolean('open-on-click') && hover)
                 this._later('open', OPEN_DELAY, () => {
@@ -879,6 +976,8 @@ class LilandIsland extends St.Widget {
         this.status = 'open';
         this.nowPlaying.refresh();
         this._sync();
+        // Activities under the player aren't visible anymore.
+        this.emit('activity-changed');
         this._handleHover();
     }
 
@@ -889,10 +988,11 @@ class LilandIsland extends St.Widget {
             return;
         this.status = 'closed';
         this._sync();
+        this.emit('activity-changed');
     }
 
     _peek() {
-        if (!this._settings.get_boolean('peek-on-track-change') || this.status !== 'closed')
+        if (!this._settings.get_boolean('peek-on-track-change') || this.status !== 'closed' || this._activity)
             return;
         this._isPeeking = true;
         this._open();
