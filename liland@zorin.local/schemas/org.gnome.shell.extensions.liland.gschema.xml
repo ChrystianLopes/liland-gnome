@@ -7,6 +7,7 @@
     <key name="osd-in-island" type="b"><default>true</default><summary>Show volume and brightness changes in the island</summary></key>
     <key name="notifications-in-island" type="b"><default>true</default><summary>Show notifications in the island</summary></key>
     <key name="replace-top-bar" type="b"><default>true</default><summary>Hide the top bar; the island shows the time and the top bar's buttons</summary></key>
+    <key name="glass-effect" type="b"><default>true</default><summary>Liquid Glass: blur what is behind the island</summary></key>
     <key name="show-indicator" type="b"><default>true</default><summary>Show the capsule icon in the top bar</summary></key>
   </schema>
 </schemalist>

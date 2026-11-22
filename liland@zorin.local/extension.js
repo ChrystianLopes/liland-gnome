@@ -65,6 +65,7 @@ export default class LilandExtension extends Extension {
         menu.addMenuItem(this._switch(_('Equalizer Follows the Music'), 'equalizer-follows-music'));
         menu.addMenuItem(this._switch(_('Volume and Brightness in the Island'), 'osd-in-island'));
         menu.addMenuItem(this._switch(_('Notifications in the Island'), 'notifications-in-island'));
+        menu.addMenuItem(this._switch(_('Glass Effect'), 'glass-effect'));
 
         menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         const quit = new PopupMenu.PopupMenuItem(_('Quit Liland'));

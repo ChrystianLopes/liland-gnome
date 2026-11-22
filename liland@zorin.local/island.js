@@ -1,14 +1,79 @@
 // The island: a black "notch" at the top center. It shows the music player
 // (activities/music.js), temporary activities (volume, notifications...) and,
 // when it replaces the top bar (topbar.js), the time and the top bar's buttons.
+import Cairo from 'cairo';
 import Clutter from 'gi://Clutter';
+import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 import GObject from 'gi://GObject';
 import GnomeDesktop from 'gi://GnomeDesktop';
+import Shell from 'gi://Shell';
 import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 import {MusicPlayer, OPEN_CONTENT_HEIGHT, MESSAGE_CONTENT_HEIGHT} from './activities/music.js';
+
+// Liquid Glass: what's behind the island (wallpaper, windows) is blurred by
+// Shell.BlurEffect (the lock screen's). It only blurs rectangles and can't be
+// cut to a shape afterwards (an offscreen effect around it would make it blur
+// an empty buffer), so the blur is made of rectangles that all lie inside the
+// island's shape: the body between the side walls, the bottom strip and, for
+// each round bottom corner, a few slices that stay inside the curve. The tint
+// drawn over it (_drawShape) covers the thin crescents the slices leave.
+const CORNER_SLICES = 10;
+
+class GlassBackdrop {
+    constructor(radius) {
+        this.actor = new Clutter.Actor({x_expand: true, y_expand: true, reactive: false});
+        this._pieces = [];
+        for (let i = 0; i < 3 + 2 * CORNER_SLICES; i++) {
+            const piece = new Clutter.Actor({reactive: false});
+            piece.add_effect(new Shell.BlurEffect({mode: Shell.BlurMode.BACKGROUND, radius, brightness: 1.0}));
+            this.actor.add_child(piece);
+            this._pieces.push(piece);
+        }
+        this._key = '';
+    }
+
+    // The island is w x h, its side walls `ear` in from the edges, its bottom
+    // corners `bottom` round.
+    update(w, h, ear, bottom) {
+        const key = [w, h, ear, bottom].map(Math.round).join(',');
+        if (key === this._key)
+            return;
+        this._key = key;
+        const rects = [];
+        // Body (down to where the bottom corners start) and bottom strip.
+        rects.push([ear, 0, w - 2 * ear, h - bottom]);
+        rects.push([ear + bottom, h - bottom, w - 2 * (ear + bottom), bottom]);
+        // Corner slices: each as wide as the curve allows at its lower edge.
+        const slice = bottom / CORNER_SLICES;
+        for (let i = 0; i < CORNER_SLICES; i++) {
+            const dy = (i + 1) * slice;
+            const inset = bottom - Math.sqrt(Math.max(0, bottom * bottom - dy * dy));
+            const y = h - bottom + i * slice;
+            rects.push([ear + inset, y, bottom - inset, slice]);
+            rects.push([w - ear - bottom, y, bottom - inset, slice]);
+        }
+        rects.push([0, 0, 0, 0]);
+        this._pieces.forEach((piece, i) => {
+            const [x, y, rw, rh] = rects[i] ?? [0, 0, 0, 0];
+            const shown = rw >= 1 && rh >= 1;
+            piece.visible = shown;
+            if (shown) {
+                piece.set_position(Math.round(x), Math.round(y));
+                piece.set_size(Math.ceil(rw), Math.ceil(rh));
+            }
+        });
+    }
+}
+
+// Glass tints (dark / light style).
+const GLASS = {
+    dark: {tint: [0.09, 0.09, 0.11, 0.52], solid: [0, 0, 0, 1], rim: [1, 1, 1, 0.16], shine: 0.07},
+    light: {tint: [0.97, 0.97, 0.98, 0.58], solid: [0.96, 0.96, 0.97, 1], rim: [0, 0, 0, 0.12], shine: 0.35},
+};
+const GLASS_BLUR_RADIUS = 36;
 
 // Same numbers as Liland's NotchGeometry / NotchMode.
 const NOTCH_WIDTH = 190;
@@ -88,6 +153,19 @@ export const Island = GObject.registerClass({
         this._bg = new St.DrawingArea({x_expand: true, y_expand: true});
         this._bg.connect('repaint', area => this._drawShape(area));
         this.add_child(this._bg);
+
+        // Liquid Glass (see GlassBackdrop), under the tint, and light / dark
+        // style.
+        this._glassShape = null;
+        this._glass = new GlassBackdrop(GLASS_BLUR_RADIUS);
+        this._glass.actor.visible = false;
+        this.insert_child_below(this._glass.actor, this._bg);
+        this._interfaceSettings = new Gio.Settings({schema_id: 'org.gnome.desktop.interface'});
+        this._styleIds = [
+            this._interfaceSettings.connect('changed::color-scheme', () => this._syncStyle()),
+            settings.connect('changed::glass-effect', () => this._syncStyle()),
+        ];
+        this._syncStyle();
 
         this._music = new MusicPlayer(nowPlaying, levels, {
             openWidth: OPEN_WIDTH - RADII.open[0] * 2,
@@ -346,28 +424,93 @@ export const Island = GObject.registerClass({
         const botR = Math.max(0, Math.min(lerp(small[1], base[1], t), (w - topR * 2) / 2,
             f > 0 ? bodyH - s : h - topR));
 
-        // Clockwise from the top-left corner. With f = 0 (and so s = 0) this is
-        // the plain notch shape.
-        cr.moveTo(f, 0);
-        quadTo(cr, [f, 0], [f + topR, 0], [f + topR, topR]);
-        cr.lineTo(f + topR, notchH - s);
-        quadTo(cr, [f + topR, notchH - s], [f + topR, notchH], [f + topR - s, notchH]);
-        cr.lineTo(topR + s, notchH);
-        quadTo(cr, [topR + s, notchH], [topR, notchH], [topR, notchH + s]);
-        cr.lineTo(topR, h - botR);
-        quadTo(cr, [topR, h - botR], [topR, h], [topR + botR, h]);
-        cr.lineTo(w - topR - botR, h);
-        quadTo(cr, [w - topR - botR, h], [w - topR, h], [w - topR, h - botR]);
-        cr.lineTo(w - topR, notchH + s);
-        quadTo(cr, [w - topR, notchH + s], [w - topR, notchH], [w - topR - s, notchH]);
-        cr.lineTo(w - f - topR + s, notchH);
-        quadTo(cr, [w - f - topR + s, notchH], [w - f - topR, notchH], [w - f - topR, notchH - s]);
-        cr.lineTo(w - f - topR, topR);
-        quadTo(cr, [w - f - topR, topR], [w - f - topR, 0], [w - f, 0]);
-        cr.closePath();
-        cr.setSourceRGBA(0, 0, 0, 1);
-        cr.fill();
+        const style = this._light ? GLASS.light : GLASS.dark;
+        const glass = this._settings.get_boolean('glass-effect') && f === 0;
+        if (f === 0) {
+            // The island's own shape (GlassBackdrop stays inside it): concave ears
+            // at the top corners, round bottom corners.
+            this._glassShape = {ear: topR, bottom: botR};
+            cr.moveTo(0, 0);
+            cr.arc(0, topR, topR, -Math.PI / 2, 0);
+            cr.lineTo(topR, h - botR);
+            cr.arcNegative(topR + botR, h - botR, botR, Math.PI, Math.PI / 2);
+            cr.lineTo(w - topR - botR, h);
+            cr.arcNegative(w - topR - botR, h - botR, botR, Math.PI / 2, 0);
+            cr.lineTo(w - topR, topR);
+            cr.arc(w, topR, topR, Math.PI, 1.5 * Math.PI);
+            cr.closePath();
+        } else {
+            // With a narrower top part (the top bar is there): the notch shape
+            // with shoulders. Clockwise from the top-left corner.
+            this._glassShape = null;
+            cr.moveTo(f, 0);
+            quadTo(cr, [f, 0], [f + topR, 0], [f + topR, topR]);
+            cr.lineTo(f + topR, notchH - s);
+            quadTo(cr, [f + topR, notchH - s], [f + topR, notchH], [f + topR - s, notchH]);
+            cr.lineTo(topR + s, notchH);
+            quadTo(cr, [topR + s, notchH], [topR, notchH], [topR, notchH + s]);
+            cr.lineTo(topR, h - botR);
+            quadTo(cr, [topR, h - botR], [topR, h], [topR + botR, h]);
+            cr.lineTo(w - topR - botR, h);
+            quadTo(cr, [w - topR - botR, h], [w - topR, h], [w - topR, h - botR]);
+            cr.lineTo(w - topR, notchH + s);
+            quadTo(cr, [w - topR, notchH + s], [w - topR, notchH], [w - topR - s, notchH]);
+            cr.lineTo(w - f - topR + s, notchH);
+            quadTo(cr, [w - f - topR + s, notchH], [w - f - topR, notchH], [w - f - topR, notchH - s]);
+            cr.lineTo(w - f - topR, topR);
+            quadTo(cr, [w - f - topR, topR], [w - f - topR, 0], [w - f, 0]);
+            cr.closePath();
+        }
+        this._syncGlassEffects(glass, w, h);
+
+        if (glass) {
+            // Tint over the blur, a soft shine from the top, a thin bright rim.
+            cr.setSourceRGBA(...style.tint);
+            cr.fillPreserve();
+            const shine = new Cairo.LinearGradient(0, 0, 0, Math.max(1, h));
+            shine.addColorStopRGBA(0, 1, 1, 1, style.shine);
+            shine.addColorStopRGBA(Math.min(1, 60 / Math.max(1, h)), 1, 1, 1, 0);
+            cr.setSource(shine);
+            cr.fillPreserve();
+            cr.setSourceRGBA(...style.rim);
+            cr.setLineWidth(1.5);
+            cr.stroke();
+        } else {
+            cr.setSourceRGBA(...style.solid);
+            cr.fill();
+        }
         cr.$dispose();
+    }
+
+    // The blur follows the island's shape: only with glass on and while the
+    // island is drawn (not the invisible idle one).
+    _syncGlassEffects(glass, w, h) {
+        const shown = glass && this._glassShape !== null && this._bg.opacity > 0 &&
+            !(this.mode === 'idle' && !this._tray);
+        if (shown)
+            this._glass.update(w, h, this._glassShape.ear, this._glassShape.bottom);
+        if (this._glass.actor.visible !== shown)
+            this._glass.actor.visible = shown;
+    }
+
+    // Light / dark style and glass on / off: restyle everything.
+    _syncStyle() {
+        this._light = this._interfaceSettings.get_string('color-scheme') !== 'prefer-dark';
+        if (this._light)
+            this.add_style_class_name('liland-light');
+        else
+            this.remove_style_class_name('liland-light');
+        if (this._menu)
+            this._styleMenu(this._menu._boxPointer);
+        this._bg.queue_repaint();
+    }
+
+    _styleMenu(pointer) {
+        pointer.add_style_class_name('liland-menu');
+        if (this._light)
+            pointer.add_style_class_name('liland-light');
+        else
+            pointer.remove_style_class_name('liland-light');
     }
 
     // ---------- activities (public API) ----------
@@ -505,7 +648,7 @@ export const Island = GObject.registerClass({
         // menu.actor is the BoxPointer, or (quick settings) an actor holding
         // it: size, style and position are the BoxPointer's.
         const pointer = menu._boxPointer;
-        pointer.add_style_class_name('liland-menu');
+        this._styleMenu(pointer);
         this._placeMenuAnchor();
         pointer.setPosition(this._menuAnchor, 0.5);
         if (menu.actor.get_parent() === this.get_parent())
@@ -566,8 +709,10 @@ export const Island = GObject.registerClass({
             pending[0].disconnect(pending[1]);
             this._pendingStyles.delete(menu);
         }
-        if (this._menu !== menu)
+        if (this._menu !== menu) {
             menu._boxPointer?.remove_style_class_name('liland-menu');
+            menu._boxPointer?.remove_style_class_name('liland-light');
+        }
     }
 
     get menu() {
@@ -764,7 +909,9 @@ export const Island = GObject.registerClass({
             opacity: to === 'idle' && !replaced ? 0 : 255,
             duration: animate ? 250 : 0,
             mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+            onComplete: () => this._bg.queue_repaint(),
         });
+        this._bg.queue_repaint();
         this._applyGeometry(animate);
     }
 
@@ -937,6 +1084,8 @@ export const Island = GObject.registerClass({
         this.nowPlaying.disconnect(this._npChangedId);
         this.nowPlaying.disconnect(this._npTrackId);
         Main.layoutManager.disconnect(this._monitorsId);
+        this._interfaceSettings.disconnect(this._styleIds[0]);
+        this._settings.disconnect(this._styleIds[1]);
         // The tray's buttons are the top bar's: topbar.js takes them back
         // before the island goes; don't destroy them with it.
         if (this._tray)

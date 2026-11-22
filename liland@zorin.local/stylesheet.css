@@ -116,58 +116,63 @@
     margin: 0 !important;
 }
 
-/* ---------- iOS-style Control Center ---------- */
-.liland-cc { spacing: 10px; padding: 2px 0 0 0; }
-.liland-cc-grid { }
-.liland-cc-tile {
-    border-radius: 22px;
-    background-color: rgba(255,255,255,0.12);
+/* ---------- macOS-style Control Center ---------- */
+/* Glass modules on the island's glass: translucent, thin bright edge. */
+.liland-cc { spacing: 10px; padding: 4px 2px 2px 2px; }
+.liland-cc-module {
+    border-radius: 16px;
+    background-color: rgba(255,255,255,0.09);
+    border: 1px solid rgba(255,255,255,0.10);
     color: #ffffff;
 }
-.liland-cc-tile:hover { background-color: rgba(255,255,255,0.17); }
-.liland-cc-tile:focus { box-shadow: inset 0 0 0 2px rgba(255,255,255,0.5); }
+.liland-cc-module:hover { background-color: rgba(255,255,255,0.13); }
+.liland-cc-module:focus { border-color: rgba(10,132,255,0.9); }
 
-.liland-cc-connectivity { padding: 10px; }
-.liland-cc-connectivity:hover { background-color: rgba(255,255,255,0.12); }
-.liland-cc-round {
-    width: 50px; height: 50px; border-radius: 25px;
+.liland-cc-connectivity { padding: 8px 10px; spacing: 2px; }
+.liland-cc-connectivity:hover { background-color: rgba(255,255,255,0.09); }
+.liland-cc-row { spacing: 10px; }
+.liland-cc-row-texts { padding: 3px 6px; border-radius: 10px; }
+.liland-cc-row-texts:hover { background-color: rgba(255,255,255,0.08); }
+.liland-cc-row-title { font-size: 13px; font-weight: 600; color: #ffffff; }
+.liland-cc-row-subtitle { font-size: 11px; color: rgba(255,255,255,0.6); }
+
+.liland-cc-circle {
+    width: 28px; height: 28px; border-radius: 14px;
     background-color: rgba(255,255,255,0.16);
     color: #ffffff;
 }
-.liland-cc-round:hover { background-color: rgba(255,255,255,0.24); }
-.liland-cc-on-blue { background-color: #0a84ff; }
-.liland-cc-on-blue:hover { background-color: #3d9bff; }
-.liland-cc-on-orange { background-color: #ff9f0a; }
-.liland-cc-on-orange:hover { background-color: #ffb340; }
-.liland-cc-on-purple { background-color: #5e5ce6; }
+.liland-cc-circle:hover { background-color: rgba(255,255,255,0.24); }
+.liland-cc-on, .liland-cc-on:hover { background-color: #0a84ff; color: #ffffff; }
+.liland-cc-on-focus, .liland-cc-on-focus:hover { background-color: #5e5ce6; color: #ffffff; }
 
-.liland-cc-square-on, .liland-cc-square-on:hover { background-color: #ffffff; color: #1c1c1e; }
-.liland-cc-circle { border-radius: 33px; }
+.liland-cc-focus { padding: 0 12px; }
+.liland-cc-small { padding: 6px; }
+.liland-cc-small-box { spacing: 5px; }
+.liland-cc-small-title { font-size: 11px; font-weight: 500; color: #ffffff; text-align: center; }
 
-.liland-cc-media { padding: 12px 12px 8px 12px; }
-.liland-cc-media:hover { background-color: rgba(255,255,255,0.12); }
-.liland-cc-media-top { spacing: 10px; }
+.liland-cc-slider-module { padding: 8px 12px 10px 12px; spacing: 7px; }
+.liland-cc-module-title { font-size: 13px; font-weight: 600; color: #ffffff; }
+/* Drawn with cairo (see SliderModule): no background here. */
+.liland-cc-slider { border-radius: 12px; }
+.liland-cc-slider:focus { box-shadow: 0 0 0 2px rgba(10,132,255,0.8); }
+.liland-cc-slider-icon { margin-left: 7px; color: rgba(255,255,255,0.75); }
+.liland-cc-slider-icon-covered { color: rgba(0,0,0,0.55); }
+
+.liland-cc-media { padding: 0 10px; spacing: 10px; }
 .liland-cc-media-art { border-radius: 8px; background-color: rgba(255,255,255,0.14); color: rgba(255,255,255,0.6); }
-.liland-cc-media-texts { spacing: 2px; }
-.liland-cc-media-title { font-size: 13px; font-weight: 600; color: #ffffff; }
-.liland-cc-media-artist { font-size: 12px; color: rgba(255,255,255,0.6); }
-.liland-cc-media-controls { spacing: 6px; }
-.liland-cc-media-button { width: 38px; height: 34px; border-radius: 17px; color: #ffffff; }
+.liland-cc-media-texts { spacing: 1px; }
+.liland-cc-media-controls { spacing: 2px; }
+.liland-cc-media-button { width: 30px; height: 30px; border-radius: 15px; color: #ffffff; }
 .liland-cc-media-button:hover { background-color: rgba(255,255,255,0.14); }
 
-.liland-cc-focus { padding: 0 10px; }
-.liland-cc-focus-box { spacing: 8px; }
-.liland-cc-focus-circle {
+.liland-cc-footer { spacing: 12px; padding-top: 2px; }
+.liland-cc-footer-button {
     width: 32px; height: 32px; border-radius: 16px;
-    background-color: rgba(255,255,255,0.16); color: #ffffff;
+    background-color: rgba(255,255,255,0.10);
+    border: 1px solid rgba(255,255,255,0.10);
+    color: #ffffff;
 }
-.liland-cc-focus-label { font-size: 12px; font-weight: 600; color: #ffffff; }
-
-/* Drawn with cairo (see VerticalSlider): no background here. */
-.liland-cc-vslider { border-radius: 22px; }
-.liland-cc-vslider:focus { box-shadow: inset 0 0 0 2px rgba(255,255,255,0.5); }
-.liland-cc-vslider-icon { color: #ffffff; margin-bottom: 14px; }
-.liland-cc-vslider-icon-dark { color: #1c1c1e; }
+.liland-cc-footer-button:hover { background-color: rgba(255,255,255,0.18); }
 
 .liland-cc-back {
     font-size: 13px; font-weight: 600; color: #ffffff;
@@ -175,3 +180,72 @@
     background-color: rgba(255,255,255,0.12);
 }
 .liland-cc-back:hover { background-color: rgba(255,255,255,0.2); }
+
+/* ---------- light style (the island and menus shown in it) ---------- */
+.liland-light .liland-artwork-placeholder,
+.liland-light .liland-notif-app-icon { color: rgba(0,0,0,0.45); }
+.liland-light .liland-status,
+.liland-light .liland-time,
+.liland-light .liland-live,
+.liland-light .liland-notif-app,
+.liland-light .liland-message-subtitle { color: rgba(0,0,0,0.5); }
+.liland-light .liland-title,
+.liland-light .liland-message-title,
+.liland-light .liland-notif-title,
+.liland-light .liland-clock,
+.liland-light .liland-osd-icon,
+.liland-light .liland-notif-icon { color: #1d1d1f; }
+.liland-light .liland-artist,
+.liland-light .liland-notif-body { color: rgba(0,0,0,0.6); }
+.liland-light .liland-osd-name,
+.liland-light .liland-osd-label { color: rgba(0,0,0,0.65); }
+.liland-light .liland-track-bg,
+.liland-light .liland-osd-track { background-color: rgba(0,0,0,0.12); }
+.liland-light .liland-track-fill,
+.liland-light .liland-osd-fill { background-color: #1d1d1f; }
+.liland-light .liland-control { color: rgba(0,0,0,0.8); }
+.liland-light .liland-control:hover { color: #000000; background-color: rgba(0,0,0,0.08); }
+.liland-light .liland-message-icon { background-color: rgba(0,0,0,0.06); color: rgba(0,0,0,0.6); }
+.liland-light .liland-message-button,
+.liland-light .liland-notif-action { color: #1d1d1f; background-color: rgba(0,0,0,0.07); }
+.liland-light .liland-message-button:hover,
+.liland-light .liland-notif-action:hover { background-color: rgba(0,0,0,0.13); }
+.liland-light .liland-notif-main:hover { background-color: rgba(0,0,0,0.04); }
+.liland-light .liland-tab { color: rgba(0,0,0,0.45); }
+.liland-light .liland-tab:hover { color: rgba(0,0,0,0.8); background-color: rgba(0,0,0,0.06); }
+.liland-light .liland-tab:checked { color: #1d1d1f; background-color: rgba(0,0,0,0.1); }
+.liland-light .liland-tray .panel-button,
+.liland-light .liland-tray .app-menu-icon { color: #1d1d1f; }
+.liland-light .liland-tray .panel-button:hover { background-color: rgba(0,0,0,0.08); }
+.liland-light .liland-tray .panel-button:active,
+.liland-light .liland-tray .panel-button:checked,
+.liland-light .liland-tray .panel-button:focus { background-color: rgba(0,0,0,0.12); }
+
+.liland-light .liland-cc-module {
+    background-color: rgba(255,255,255,0.5);
+    border-color: rgba(255,255,255,0.75);
+    color: #1d1d1f;
+}
+.liland-light .liland-cc-module:hover { background-color: rgba(255,255,255,0.65); }
+.liland-light .liland-cc-connectivity:hover { background-color: rgba(255,255,255,0.5); }
+.liland-light .liland-cc-row-texts:hover { background-color: rgba(0,0,0,0.05); }
+.liland-light .liland-cc-row-title,
+.liland-light .liland-cc-module-title,
+.liland-light .liland-cc-small-title { color: #1d1d1f; }
+.liland-light .liland-cc-row-subtitle { color: rgba(0,0,0,0.55); }
+.liland-light .liland-cc-circle { background-color: rgba(0,0,0,0.08); color: #1d1d1f; }
+.liland-light .liland-cc-circle:hover { background-color: rgba(0,0,0,0.14); }
+.liland-light .liland-cc-on, .liland-light .liland-cc-on:hover { background-color: #0a84ff; color: #ffffff; }
+.liland-light .liland-cc-on-focus, .liland-light .liland-cc-on-focus:hover { background-color: #5e5ce6; color: #ffffff; }
+.liland-light .liland-cc-slider-icon { color: rgba(0,0,0,0.55); }
+.liland-light .liland-cc-media-art { background-color: rgba(0,0,0,0.06); color: rgba(0,0,0,0.5); }
+.liland-light .liland-cc-media-button { color: #1d1d1f; }
+.liland-light .liland-cc-media-button:hover { background-color: rgba(0,0,0,0.08); }
+.liland-light .liland-cc-footer-button {
+    background-color: rgba(255,255,255,0.5);
+    border-color: rgba(255,255,255,0.75);
+    color: #1d1d1f;
+}
+.liland-light .liland-cc-footer-button:hover { background-color: rgba(255,255,255,0.7); }
+.liland-light .liland-cc-back { color: #1d1d1f; background-color: rgba(0,0,0,0.07); }
+.liland-light .liland-cc-back:hover { background-color: rgba(0,0,0,0.12); }
