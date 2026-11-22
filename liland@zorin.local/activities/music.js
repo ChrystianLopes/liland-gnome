@@ -14,6 +14,8 @@ import {_} from '../i18n.js';
 
 export const OPEN_CONTENT_HEIGHT = 140;
 export const MESSAGE_CONTENT_HEIGHT = 70;
+// Side padding of the player's header (.liland-header in stylesheet.css).
+const HEADER_PADDING = 22;
 
 const SPOTIFY_IDS = ['spotify.desktop', 'spotify_spotify.desktop', 'com.spotify.Client.desktop'];
 
@@ -303,9 +305,10 @@ export const MusicPlayer = GObject.registerClass({
 
     // Keep the open player's header inside the top part of the island and,
     // on the right, clear of whatever the island puts there (tab buttons).
+    // (Inline padding, not margins: St resets actor margins to the CSS ones
+    // whenever the style is recomputed, e.g. when the shell theme loads.)
     setHeaderInsets(left, right) {
-        this._header.margin_left = left;
-        this._header.margin_right = right;
+        this._header.style = `padding-left: ${HEADER_PADDING + left}px; padding-right: ${HEADER_PADDING + right}px;`;
     }
 
     setCompactPadding(px) {
