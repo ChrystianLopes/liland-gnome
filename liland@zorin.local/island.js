@@ -1,0 +1,784 @@
+// The island: a black "notch" at the top center that grows into a player.
+import Clutter from 'gi://Clutter';
+import GLib from 'gi://GLib';
+import GObject from 'gi://GObject';
+import Gio from 'gi://Gio';
+import Pango from 'gi://Pango';
+import Shell from 'gi://Shell';
+import St from 'gi://St';
+import * as Main from 'resource:///org/gnome/shell/ui/main.js';
+
+import {_} from './i18n.js';
+
+// Same numbers as Liland's NotchGeometry / NotchMode.
+const NOTCH_WIDTH = 190;
+const COMPACT_WING = 42;
+const OPEN_WIDTH = 480;
+const OPEN_CONTENT_HEIGHT = 140;
+const MESSAGE_CONTENT_HEIGHT = 70;
+const RADII = {
+    idle: [6, 10],
+    compact: [6, 12],
+    open: [18, 28],
+    message: [16, 24],
+};
+const OPEN_DELAY = 100;
+const CLOSE_DELAY = 150;
+const PEEK_DURATION = 3500;
+const ANIM_MS = 380;
+
+const SPOTIFY_IDS = ['spotify.desktop', 'spotify_spotify.desktop', 'com.spotify.Client.desktop'];
+
+const lerp = (a, b, t) => a + (b - a) * t;
+const clamp01 = v => Math.min(Math.max(v, 0), 1);
+const rgbCss = ([r, g, b], a = 1) => `rgba(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)},${a})`;
+
+function formatTime(seconds) {
+    const total = Math.max(0, Math.floor(seconds));
+    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+}
+
+// Quadratic curve helper for cairo (which only has cubic curves).
+function quadTo(cr, [x0, y0], [qx, qy], [x, y]) {
+    cr.curveTo(x0 + 2 / 3 * (qx - x0), y0 + 2 / 3 * (qy - y0),
+        x + 2 / 3 * (qx - x), y + 2 / 3 * (qy - y), x, y);
+}
+
+const EqualizerView = GObject.registerClass(
+class LilandEqualizer extends St.DrawingArea {
+    static RESTING = [0.69, 0.2, 0.56, 0.74, 0.75, 0.63];
+    static SPEEDS = [5.1, 6.7, 4.3, 7.9, 5.6, 6.1];
+    static PHASES = [0, 1.3, 2.6, 0.7, 2.1, 3.4];
+
+    _init(width, height, island) {
+        super._init({width, height, y_align: Clutter.ActorAlign.CENTER});
+        this._island = island;
+    }
+
+    vfunc_repaint() {
+        const cr = this.get_context();
+        const [w, h] = this.get_surface_size();
+        const island = this._island;
+        const live = island.liveLevels;
+        const time = GLib.get_monotonic_time() / 1e6;
+        const playFactor = island.playFactor;
+        const count = 6, gap = 0.65;
+        const barW = w / (count + (count - 1) * gap);
+        const [r, g, b] = island.nowPlaying.accentColor;
+        cr.setSourceRGBA(r, g, b, 1);
+        for (let i = 0; i < count; i++) {
+            let level;
+            if (live)
+                level = live[i] ?? 0;
+            else {
+                const fast = Math.sin(time * EqualizerView.SPEEDS[i] + EqualizerView.PHASES[i]);
+                const slow = Math.sin(time * EqualizerView.SPEEDS[i] * 0.53 + EqualizerView.PHASES[i] * 2);
+                level = clamp01(EqualizerView.RESTING[i] + 0.22 * (fast * 0.6 + slow * 0.4));
+            }
+            level *= playFactor;
+            const barH = barW + (h - barW) * level;
+            const x = i * barW * (1 + gap);
+            const y = (h - barH) / 2;
+            const rad = barW / 2;
+            cr.newSubPath();
+            cr.arc(x + rad, y + rad, rad, Math.PI, 0);
+            cr.arc(x + rad, y + barH - rad, rad, 0, Math.PI);
+            cr.closePath();
+            cr.fill();
+        }
+        cr.$dispose();
+    }
+});
+
+const ArtworkView = GObject.registerClass(
+class LilandArtwork extends St.Bin {
+    _init(size, radius) {
+        super._init({
+            width: size, height: size,
+            style_class: 'liland-artwork',
+            style: `border-radius: ${radius}px;`,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        this._radius = radius;
+        this._placeholder = new St.Icon({
+            icon_name: 'audio-x-generic-symbolic',
+            icon_size: Math.max(8, Math.round(radius * 1.6)),
+            style_class: 'liland-artwork-placeholder',
+            x_align: Clutter.ActorAlign.CENTER,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        this._path = undefined;
+        this.setPath(null);
+    }
+
+    setPath(path) {
+        if (path === this._path)
+            return;
+        this._path = path;
+        if (path) {
+            const uri = Gio.File.new_for_path(path).get_uri();
+            this.style = `border-radius: ${this._radius}px; background-image: url("${uri}"); background-size: cover;`;
+            this.set_child(null);
+        } else {
+            this.style = `border-radius: ${this._radius}px; background-color: rgba(255,255,255,0.12);`;
+            this.set_child(this._placeholder);
+        }
+        this.opacity = 0;
+        this.ease({opacity: 255, duration: 250, mode: Clutter.AnimationMode.EASE_OUT_QUAD});
+    }
+});
+
+function controlButton(iconName, size, onClick) {
+    const icon = new St.Icon({icon_name: iconName, icon_size: size});
+    const button = new St.Button({
+        style_class: 'liland-control',
+        child: icon,
+        width: 40, height: 30,
+        can_focus: false,
+    });
+    button.set_pivot_point(0.5, 0.5);
+    button.connect('clicked', onClick);
+    button.connect('button-press-event', () => {
+        button.ease({scale_x: 0.88, scale_y: 0.88, duration: 90, mode: Clutter.AnimationMode.EASE_OUT_QUAD});
+        return Clutter.EVENT_PROPAGATE;
+    });
+    button.connect('button-release-event', () => {
+        button.ease({scale_x: 1, scale_y: 1, duration: 260, mode: Clutter.AnimationMode.EASE_OUT_BACK});
+        return Clutter.EVENT_PROPAGATE;
+    });
+    button.connect('notify::hover', () => {
+        if (!button.hover)
+            button.ease({scale_x: 1, scale_y: 1, duration: 150, mode: Clutter.AnimationMode.EASE_OUT_QUAD});
+    });
+    button.icon = icon;
+    return button;
+}
+
+export const Island = GObject.registerClass(
+class LilandIsland extends St.Widget {
+    _init(nowPlaying, settings, levels) {
+        super._init({
+            name: 'liland-island',
+            reactive: true,
+            track_hover: true,
+            clip_to_allocation: true,
+            layout_manager: new Clutter.BinLayout(),
+        });
+        this.nowPlaying = nowPlaying;
+        this._settings = settings;
+        this._levels = levels;
+        this.status = 'closed';
+        this.mode = 'idle';
+        this.playFactor = 0;
+        this.liveLevels = null;
+        this._isInteracting = false;
+        this._isPeeking = false;
+        this._timeouts = {};
+
+        this._bg = new St.DrawingArea({x_expand: true, y_expand: true});
+        this._bg.connect('repaint', area => this._drawShape(area));
+        this.add_child(this._bg);
+
+        this._buildCompact();
+        this._buildOpen();
+        this._buildMessage();
+
+        this.connect('notify::hover', () => this._handleHover());
+        this.connect('button-press-event', () => {
+            if (this.status === 'closed' && this._settings.get_boolean('open-on-click')) {
+                this._open();
+                return Clutter.EVENT_STOP;
+            }
+            return Clutter.EVENT_PROPAGATE;
+        });
+        this.connect('notify::height', () => this._bg.queue_repaint());
+        this.connect('notify::width', () => this._bg.queue_repaint());
+
+        this._npChangedId = nowPlaying.connect('changed', () => this._sync());
+        this._npTrackId = nowPlaying.connect('track-changed', () => this._peek());
+        this._levelsId = levels.connect('levels', (_l, values) => {
+            this.liveLevels = values;
+        });
+        this._levelsStopId = levels.connect('stopped', () => {
+            this.liveLevels = null;
+        });
+        this._monitorsId = Main.layoutManager.connect('monitors-changed', () => this._applyGeometry(false));
+
+        this._sync(true);
+    }
+
+    // ---------- geometry ----------
+
+    get _notchHeight() {
+        // Like Liland on Macs without a notch: as tall as the menu bar (the
+        // top bar here), when the top bar is actually at the top.
+        const monitor = Main.layoutManager.primaryMonitor;
+        const [, panelY] = Main.panel.get_transformed_position();
+        const atTop = monitor && Main.panel.mapped && Math.abs(panelY - monitor.y) < 2;
+        return atTop ? Math.max(Main.panel.height, 24) : 32;
+    }
+
+    _sizeFor(mode) {
+        const h = this._notchHeight;
+        switch (mode) {
+        case 'compact': return [NOTCH_WIDTH + COMPACT_WING * 2, h];
+        case 'open': return [OPEN_WIDTH, h + OPEN_CONTENT_HEIGHT];
+        case 'message': return [OPEN_WIDTH, h + MESSAGE_CONTENT_HEIGHT];
+        default: return [NOTCH_WIDTH, h];
+        }
+    }
+
+    _applyGeometry(animate) {
+        const monitor = Main.layoutManager.primaryMonitor;
+        if (!monitor)
+            return;
+        const [w, h] = this._sizeFor(this.mode);
+        const x = Math.round(monitor.x + (monitor.width - w) / 2);
+        const y = monitor.y;
+        this.remove_transition('width');
+        this.remove_transition('height');
+        this.remove_transition('x');
+        if (animate) {
+            this.ease({
+                x, y, width: w, height: h,
+                duration: ANIM_MS,
+                mode: Clutter.AnimationMode.EASE_OUT_QUINT,
+            });
+        } else {
+            this.set_position(x, y);
+            this.set_size(w, h);
+        }
+    }
+
+    _drawShape(area) {
+        const cr = area.get_context();
+        const [w, h] = area.get_surface_size();
+        const notchH = this._notchHeight;
+        const openH = notchH + OPEN_CONTENT_HEIGHT;
+        const t = clamp01((h - notchH) / (openH - notchH));
+        const base = this.mode === 'message' ? RADII.message : RADII.open;
+        const small = this.mode === 'idle' ? RADII.idle : RADII.compact;
+        const topR = Math.max(0, Math.min(lerp(small[0], base[0], t), w / 4, h / 2));
+        const botR = Math.max(0, Math.min(lerp(small[1], base[1], t), (w - topR * 2) / 2, h - topR));
+
+        cr.moveTo(0, 0);
+        quadTo(cr, [0, 0], [topR, 0], [topR, topR]);
+        cr.lineTo(topR, h - botR);
+        quadTo(cr, [topR, h - botR], [topR, h], [topR + botR, h]);
+        cr.lineTo(w - topR - botR, h);
+        quadTo(cr, [w - topR - botR, h], [w - topR, h], [w - topR, h - botR]);
+        cr.lineTo(w - topR, topR);
+        quadTo(cr, [w - topR, topR], [w - topR, 0], [w, 0]);
+        cr.closePath();
+        cr.setSourceRGBA(0, 0, 0, 1);
+        cr.fill();
+        cr.$dispose();
+    }
+
+    // ---------- views ----------
+
+    _buildCompact() {
+        this._compact = new St.BoxLayout({
+            style_class: 'liland-compact',
+            x_expand: true,
+            y_align: Clutter.ActorAlign.START,
+            opacity: 0,
+            visible: false,
+        });
+        this._compactArt = new ArtworkView(20, 5);
+        this._compactEq = new EqualizerView(18, 14, this);
+        this._compact.add_child(this._compactArt);
+        this._compact.add_child(new St.Widget({x_expand: true}));
+        this._compact.add_child(this._compactEq);
+        this.add_child(this._compact);
+    }
+
+    _buildOpen() {
+        const innerWidth = OPEN_WIDTH - RADII.open[0] * 2;
+        this._openBox = new St.BoxLayout({
+            vertical: true,
+            width: innerWidth,
+            x_align: Clutter.ActorAlign.CENTER,
+            y_align: Clutter.ActorAlign.START,
+            opacity: 0,
+            visible: false,
+        });
+        this._openBox.set_pivot_point(0.5, 0);
+
+        // Header: "Now Playing" + app icon.
+        const header = new St.BoxLayout({style_class: 'liland-header'});
+        this._statusLabel = new St.Label({style_class: 'liland-status', y_align: Clutter.ActorAlign.CENTER});
+        this._appButton = new St.Button({style_class: 'liland-app-button', y_align: Clutter.ActorAlign.CENTER, can_focus: false});
+        this._appButton.connect('clicked', () => this._raisePlayer());
+        header.add_child(this._statusLabel);
+        header.add_child(new St.Widget({x_expand: true}));
+        header.add_child(this._appButton);
+        this._header = header;
+        this._openBox.add_child(header);
+
+        const body = new St.BoxLayout({vertical: true, style_class: 'liland-body'});
+        this._openBox.add_child(body);
+
+        // Track info.
+        const info = new St.BoxLayout({style_class: 'liland-info'});
+        const artButton = new St.Button({can_focus: false, y_align: Clutter.ActorAlign.CENTER});
+        this._openArt = new ArtworkView(56, 10);
+        artButton.set_child(this._openArt);
+        artButton.connect('clicked', () => this._raisePlayer());
+        const texts = new St.BoxLayout({vertical: true, x_expand: true, y_align: Clutter.ActorAlign.CENTER, style_class: 'liland-texts'});
+        this._titleLabel = new St.Label({style_class: 'liland-title'});
+        this._artistLabel = new St.Label({style_class: 'liland-artist'});
+        for (const l of [this._titleLabel, this._artistLabel])
+            l.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        texts.add_child(this._titleLabel);
+        texts.add_child(this._artistLabel);
+        this._openEq = new EqualizerView(22, 24, this);
+        info.add_child(artButton);
+        info.add_child(texts);
+        info.add_child(this._openEq);
+        body.add_child(info);
+
+        // Progress.
+        const progress = new St.BoxLayout({style_class: 'liland-progress', height: 14});
+        this._elapsedLabel = new St.Label({style_class: 'liland-time', y_align: Clutter.ActorAlign.CENTER});
+        this._remainingLabel = new St.Label({style_class: 'liland-time', y_align: Clutter.ActorAlign.CENTER});
+        this._track = new St.Widget({
+            reactive: true, x_expand: true, height: 14,
+            layout_manager: new Clutter.BinLayout(),
+        });
+        this._trackBg = new St.Widget({style_class: 'liland-track-bg', x_expand: true, height: 4, y_align: Clutter.ActorAlign.CENTER});
+        this._trackFill = new St.Widget({style_class: 'liland-track-fill', height: 4});
+        this._trackBg.add_child(this._trackFill);
+        this._track.add_child(this._trackBg);
+        this._track.connect('button-press-event', (_a, event) => this._beginDrag(event));
+        this._liveLabel = new St.Label({text: _('Live'), style_class: 'liland-live', y_align: Clutter.ActorAlign.CENTER});
+        progress.add_child(this._elapsedLabel);
+        progress.add_child(this._track);
+        progress.add_child(this._remainingLabel);
+        progress.add_child(this._liveLabel);
+        body.add_child(progress);
+
+        // Controls.
+        const controls = new St.BoxLayout({style_class: 'liland-controls', x_align: Clutter.ActorAlign.CENTER, height: 30});
+        this._shuffleBtn = controlButton('media-playlist-shuffle-symbolic', 14, () => this.nowPlaying.toggleShuffle());
+        this._prevBtn = controlButton('media-skip-backward-symbolic', 18, () => this.nowPlaying.previous());
+        this._playBtn = controlButton('media-playback-start-symbolic', 26, () => this.nowPlaying.playPause());
+        this._nextBtn = controlButton('media-skip-forward-symbolic', 18, () => this.nowPlaying.next());
+        this._repeatBtn = controlButton('media-playlist-repeat-symbolic', 14, () => this.nowPlaying.cycleRepeat());
+        for (const b of [this._shuffleBtn, this._prevBtn, this._playBtn, this._nextBtn, this._repeatBtn])
+            controls.add_child(b);
+        body.add_child(controls);
+
+        this.add_child(this._openBox);
+    }
+
+    _buildMessage() {
+        const innerWidth = OPEN_WIDTH - RADII.message[0] * 2;
+        this._messageBox = new St.BoxLayout({
+            vertical: true,
+            width: innerWidth,
+            x_align: Clutter.ActorAlign.CENTER,
+            y_align: Clutter.ActorAlign.START,
+            opacity: 0,
+            visible: false,
+        });
+        this._messageBox.set_pivot_point(0.5, 0);
+        this._messageSpacer = new St.Widget();
+        this._messageBox.add_child(this._messageSpacer);
+        const row = new St.BoxLayout({style_class: 'liland-message', height: MESSAGE_CONTENT_HEIGHT - 6});
+        const iconBin = new St.Bin({
+            style_class: 'liland-message-icon',
+            child: new St.Icon({icon_name: 'audio-x-generic-symbolic', icon_size: 18}),
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        const texts = new St.BoxLayout({vertical: true, x_expand: true, y_align: Clutter.ActorAlign.CENTER, style_class: 'liland-texts'});
+        texts.add_child(new St.Label({text: _('Nothing playing'), style_class: 'liland-message-title'}));
+        texts.add_child(new St.Label({text: _('Play music in any app or browser'), style_class: 'liland-message-subtitle'}));
+        this._messageAction = new St.Button({style_class: 'liland-message-button', y_align: Clutter.ActorAlign.CENTER, can_focus: false});
+        this._messageAction.connect('clicked', () => {
+            this._preferredApp?.activate();
+            this._close();
+        });
+        row.add_child(iconBin);
+        row.add_child(texts);
+        row.add_child(this._messageAction);
+        this._messageBox.add_child(row);
+        this.add_child(this._messageBox);
+    }
+
+    // ---------- state ----------
+
+    _computeMode() {
+        const hasTrack = this.nowPlaying.track !== null;
+        if (this.status === 'open')
+            return hasTrack ? 'open' : 'message';
+        return hasTrack && this.nowPlaying.isPlaying ? 'compact' : 'idle';
+    }
+
+    _contentFor(mode) {
+        return {compact: this._compact, open: this._openBox, message: this._messageBox}[mode] ?? null;
+    }
+
+    _sync(initial = false) {
+        const np = this.nowPlaying;
+        const track = np.track;
+
+        // Views' data.
+        this._compactArt.setPath(np.artworkPath);
+        this._openArt.setPath(np.artworkPath);
+        this._titleLabel.text = track?.title ?? '';
+        this._artistLabel.text = track?.artist ?? '';
+        this._statusLabel.text = np.isPlaying ? _('Now Playing') : _('Paused');
+        this._playBtn.icon.icon_name = np.isPlaying ? 'media-playback-pause-symbolic' : 'media-playback-start-symbolic';
+        this._setModeButton(this._shuffleBtn, np.isShuffling);
+        const repeat = np.repeatMode;
+        this._repeatBtn.icon.icon_name = repeat === 'one' ? 'media-playlist-repeat-song-symbolic' : 'media-playlist-repeat-symbolic';
+        this._setModeButton(this._repeatBtn, repeat === null ? null : repeat !== 'off');
+        this._trackFill.style = `background-color: ${rgbCss([1, 1, 1])};`;
+        this._syncAppIcon();
+        this._syncMessageAction();
+        this._syncPlaying();
+
+        const mode = this._computeMode();
+        if (mode !== this.mode || initial) {
+            const previous = this.mode;
+            this.mode = mode;
+            this._transition(previous, mode, !initial);
+        }
+        this._updateProgress();
+        this._updateTicker();
+    }
+
+    _setModeButton(button, isOn) {
+        button.reactive = isOn !== null;
+        button.opacity = isOn === null ? 0 : 255;
+        const color = isOn ? rgbCss(this.nowPlaying.accentColor) : 'rgba(255,255,255,0.5)';
+        button.icon.style = `color: ${color};`;
+    }
+
+    _syncAppIcon() {
+        const player = this.nowPlaying.activePlayer;
+        const app = this._appFor(player);
+        if (app) {
+            this._appButton.set_child(app.create_icon_texture(16));
+            this._appButton.visible = true;
+        } else {
+            this._appButton.visible = false;
+        }
+    }
+
+    _appFor(player) {
+        if (!player?.desktopEntry)
+            return null;
+        const sys = Shell.AppSystem.get_default();
+        return sys.lookup_app(`${player.desktopEntry}.desktop`) ??
+            sys.lookup_app(`${player.desktopEntry.toLowerCase()}.desktop`) ?? null;
+    }
+
+    _syncMessageAction() {
+        const sys = Shell.AppSystem.get_default();
+        let app = null;
+        for (const id of SPOTIFY_IDS) {
+            app = sys.lookup_app(id);
+            if (app)
+                break;
+        }
+        if (!app) {
+            for (const p of this.nowPlaying.players.values()) {
+                app = this._appFor(p);
+                if (app)
+                    break;
+            }
+        }
+        this._preferredApp = app;
+        this._messageAction.visible = Boolean(app);
+        if (app)
+            this._messageAction.label = _('Open %s').replace('%s', app.get_name());
+    }
+
+    _raisePlayer() {
+        const player = this.nowPlaying.activePlayer;
+        const app = this._appFor(player);
+        if (app)
+            app.activate();
+        else
+            player?.raise();
+    }
+
+    _syncPlaying() {
+        const playing = this.nowPlaying.isPlaying;
+        const target = playing ? 1 : 0;
+        if (this._playTarget === target)
+            return;
+        this._playTarget = target;
+        this._playFrom = this.playFactor;
+        this._playStart = GLib.get_monotonic_time();
+        this._levels.follow(playing);
+    }
+
+    _transition(from, to, animate) {
+        const oldContent = this._contentFor(from);
+        const newContent = this._contentFor(to);
+        const notchH = this._notchHeight;
+        this._header.height = notchH;
+        this._messageSpacer.height = notchH;
+        this._compact.height = notchH;
+        const topR = (RADII[to] ?? RADII.idle)[0];
+        this._compact.style = `padding: 0 ${10 + topR}px;`;
+
+        if (oldContent && oldContent !== newContent) {
+            oldContent.remove_all_transitions();
+            if (animate) {
+                oldContent.ease({
+                    opacity: 0,
+                    scale_x: from === 'compact' ? 1 : 0.85,
+                    scale_y: from === 'compact' ? 1 : 0.85,
+                    duration: 150,
+                    mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+                    onComplete: () => {
+                        if (this._contentFor(this.mode) !== oldContent)
+                            oldContent.hide();
+                    },
+                });
+            } else {
+                oldContent.opacity = 0;
+                oldContent.hide();
+            }
+        }
+        if (newContent) {
+            newContent.remove_all_transitions();
+            newContent.show();
+            if (animate) {
+                if (to !== 'compact') {
+                    newContent.scale_x = newContent.scale_y = 0.85;
+                }
+                newContent.ease({
+                    opacity: 255, scale_x: 1, scale_y: 1,
+                    delay: 50,
+                    duration: ANIM_MS,
+                    mode: Clutter.AnimationMode.EASE_OUT_BACK,
+                });
+            } else {
+                newContent.opacity = 255;
+                newContent.scale_x = newContent.scale_y = 1;
+            }
+        }
+
+        // Without a physical notch, the idle island is invisible (like Liland on Macs without a notch).
+        this._bg.remove_all_transitions();
+        this._bg.ease({
+            opacity: to === 'idle' ? 0 : 255,
+            duration: animate ? 250 : 0,
+            mode: Clutter.AnimationMode.EASE_OUT_QUAD,
+        });
+        this._applyGeometry(animate);
+    }
+
+    // ---------- progress ----------
+
+    _updateProgress() {
+        if (this.mode !== 'open')
+            return;
+        const np = this.nowPlaying;
+        const duration = np.track?.duration ?? 0;
+        const position = this._dragFraction !== undefined ? this._dragFraction * duration : np.elapsed();
+        this._elapsedLabel.text = formatTime(position);
+        const hasDuration = duration > 0;
+        this._remainingLabel.visible = hasDuration;
+        this._liveLabel.visible = !hasDuration;
+        this._trackFill.visible = hasDuration;
+        this._track.reactive = hasDuration && np.activePlayer?.snapshot?.canSeek !== false;
+        if (!hasDuration)
+            return;
+        this._remainingLabel.text = `-${formatTime(duration - position)}`;
+        const width = this._track.width;
+        if (width > 0)
+            this._trackFill.width = Math.max(0, Math.round(width * clamp01(position / duration)));
+        const barH = this._dragFraction !== undefined ? 6 : 4;
+        this._trackBg.height = barH;
+        this._trackFill.height = barH;
+    }
+
+    _fractionAt(x) {
+        const [tx] = this._track.get_transformed_position();
+        return clamp01((x - tx) / Math.max(1, this._track.width));
+    }
+
+    _beginDrag(event) {
+        const [x] = event.get_coords();
+        this._isInteracting = true;
+        this._dragFraction = this._fractionAt(x);
+        this._updateProgress();
+        this._dragId = global.stage.connect('captured-event', (_s, ev) => {
+            const type = ev.type();
+            if (type === Clutter.EventType.MOTION) {
+                this._dragFraction = this._fractionAt(ev.get_coords()[0]);
+                this._updateProgress();
+                return Clutter.EVENT_STOP;
+            }
+            if (type === Clutter.EventType.BUTTON_RELEASE) {
+                const fraction = this._fractionAt(ev.get_coords()[0]);
+                const duration = this.nowPlaying.track?.duration ?? 0;
+                this.nowPlaying.seek(fraction * duration);
+                this._endDrag();
+                return Clutter.EVENT_STOP;
+            }
+            return Clutter.EVENT_PROPAGATE;
+        });
+        return Clutter.EVENT_STOP;
+    }
+
+    _endDrag() {
+        if (this._dragId) {
+            global.stage.disconnect(this._dragId);
+            this._dragId = 0;
+        }
+        this._dragFraction = undefined;
+        this._isInteracting = false;
+        this._updateProgress();
+        this._handleHover();
+    }
+
+    // ---------- animation ticker (equalizers + progress) ----------
+
+    _updateTicker() {
+        const needs = this.mode !== 'idle' && (this._playTarget === 1 || this.playFactor > 0 || this.mode === 'open');
+        if (needs && !this._tickId) {
+            this._tickId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => this._tick());
+        } else if (!needs && this._tickId) {
+            GLib.source_remove(this._tickId);
+            this._tickId = 0;
+        }
+    }
+
+    _tick() {
+        const elapsed = (GLib.get_monotonic_time() - (this._playStart ?? 0)) / 1e6;
+        const t = clamp01(elapsed / 0.5);
+        const eased = 1 - Math.pow(1 - t, 3);
+        this.playFactor = lerp(this._playFrom ?? 0, this._playTarget ?? 0, eased);
+        if (this.mode === 'compact')
+            this._compactEq.queue_repaint();
+        if (this.mode === 'open') {
+            this._openEq.queue_repaint();
+            this._progressCounter = ((this._progressCounter ?? 0) + 1) % 15;
+            if (this._progressCounter === 0 || this._dragFraction !== undefined)
+                this._updateProgress();
+        }
+        const keep = this.mode !== 'idle' && (this._playTarget === 1 || this.playFactor > 0.001 || this.mode === 'open');
+        if (!keep)
+            this._tickId = 0;
+        return keep ? GLib.SOURCE_CONTINUE : GLib.SOURCE_REMOVE;
+    }
+
+    // ---------- hover / open / close (same logic as NotchWindowController) ----------
+
+    _later(name, ms, fn) {
+        this._cancel(name);
+        this._timeouts[name] = GLib.timeout_add(GLib.PRIORITY_DEFAULT, ms, () => {
+            delete this._timeouts[name];
+            fn();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _cancel(name) {
+        if (this._timeouts[name]) {
+            GLib.source_remove(this._timeouts[name]);
+            delete this._timeouts[name];
+        }
+    }
+
+    _pointerNear(margin) {
+        const [px, py] = global.get_pointer();
+        const [x, y] = this.get_transformed_position();
+        const [w, h] = this._sizeFor(this.mode);
+        const monitor = Main.layoutManager.primaryMonitor;
+        const cx = monitor.x + (monitor.width - w) / 2;
+        return px >= cx - margin && px <= cx + w + margin && py >= y - margin && py <= y + h + margin && x !== undefined;
+    }
+
+    _handleHover() {
+        const hover = this.hover;
+        if (this.status === 'closed') {
+            if (!this._settings.get_boolean('open-on-click') && hover)
+                this._later('open', OPEN_DELAY, () => {
+                    if (this.hover)
+                        this._open();
+                });
+            else
+                this._cancel('open');
+            return;
+        }
+        if (hover) {
+            this._cancel('close');
+            this._endPeek();
+        } else if (!this._isInteracting && !this._isPeeking) {
+            this._scheduleClose();
+        }
+    }
+
+    _scheduleClose() {
+        this._later('close', CLOSE_DELAY, () => {
+            if (this.hover || this._isInteracting || this._isPeeking)
+                return;
+            if (this._pointerNear(10)) {
+                this._scheduleClose();
+                return;
+            }
+            this._close();
+        });
+    }
+
+    _open() {
+        this._cancel('close');
+        if (this.status !== 'closed')
+            return;
+        this.status = 'open';
+        this.nowPlaying.refresh();
+        this._sync();
+        this._handleHover();
+    }
+
+    _close() {
+        this._cancel('open');
+        this._endPeek();
+        if (this.status === 'closed')
+            return;
+        this.status = 'closed';
+        this._sync();
+    }
+
+    _peek() {
+        if (!this._settings.get_boolean('peek-on-track-change') || this.status !== 'closed')
+            return;
+        this._isPeeking = true;
+        this._open();
+        this._later('peek', PEEK_DURATION, () => {
+            if (!this._isPeeking)
+                return;
+            this._isPeeking = false;
+            this._handleHover();
+        });
+    }
+
+    _endPeek() {
+        this._isPeeking = false;
+        this._cancel('peek');
+    }
+
+    destroy() {
+        for (const name of Object.keys(this._timeouts))
+            this._cancel(name);
+        if (this._tickId)
+            GLib.source_remove(this._tickId);
+        this._tickId = 0;
+        if (this._dragId)
+            global.stage.disconnect(this._dragId);
+        this.nowPlaying.disconnect(this._npChangedId);
+        this.nowPlaying.disconnect(this._npTrackId);
+        this._levels.disconnect(this._levelsId);
+        this._levels.disconnect(this._levelsStopId);
+        Main.layoutManager.disconnect(this._monitorsId);
+        super.destroy();
+    }
+});

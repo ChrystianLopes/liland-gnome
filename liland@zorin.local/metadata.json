@@ -1,0 +1,8 @@
+{
+  "uuid": "liland@zorin.local",
+  "name": "Liland",
+  "description": "Uma dynamic island no topo da tela pra ver e controlar a música que está tocando (inspirado no Liland para macOS).",
+  "shell-version": ["46"],
+  "settings-schema": "org.gnome.shell.extensions.liland",
+  "version": 1
+}

@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist>
+  <schema id="org.gnome.shell.extensions.liland" path="/org/gnome/shell/extensions/liland/">
+    <key name="peek-on-track-change" type="b"><default>false</default><summary>Open the island for a few seconds when the track changes</summary></key>
+    <key name="open-on-click" type="b"><default>false</default><summary>Open only on click instead of on hover</summary></key>
+    <key name="equalizer-follows-music" type="b"><default>false</default><summary>Equalizer bars follow the real audio</summary></key>
+    <key name="show-indicator" type="b"><default>true</default><summary>Show the capsule icon in the top bar</summary></key>
+  </schema>
+</schemalist>

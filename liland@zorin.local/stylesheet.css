@@ -1,0 +1,44 @@
+#liland-island { font-feature-settings: "tnum"; }
+
+.liland-artwork { border-radius: 5px; }
+.liland-artwork-placeholder { color: rgba(255,255,255,0.45); }
+
+.liland-header { padding: 0 22px; }
+.liland-status { font-size: 11px; font-weight: 500; color: rgba(255,255,255,0.5); }
+.liland-app-button { padding: 0; border-radius: 4px; }
+
+.liland-body { padding: 0 22px 14px 22px; spacing: 10px; }
+.liland-info { spacing: 12px; }
+.liland-texts { spacing: 3px; }
+.liland-title { font-size: 15px; font-weight: 600; color: #ffffff; }
+.liland-artist { font-size: 13px; color: rgba(255,255,255,0.6); }
+
+.liland-progress { spacing: 8px; }
+.liland-time { font-size: 11px; font-weight: 500; color: rgba(255,255,255,0.5); min-width: 36px; text-align: center; }
+.liland-live { font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.5); min-width: 36px; }
+.liland-track-bg { background-color: rgba(255,255,255,0.18); border-radius: 3px; }
+.liland-track-fill { background-color: #ffffff; border-radius: 3px; }
+
+.liland-controls { spacing: 26px; }
+.liland-control {
+    color: rgba(255,255,255,0.85);
+    border-radius: 19px;
+    padding: 0;
+    transition-duration: 150ms;
+}
+.liland-control:hover { color: #ffffff; background-color: rgba(255,255,255,0.12); }
+
+.liland-message { padding: 0 22px 6px 22px; spacing: 12px; }
+.liland-message-icon {
+    width: 32px; height: 32px; border-radius: 16px;
+    background-color: rgba(255,255,255,0.1);
+    color: rgba(255,255,255,0.7);
+}
+.liland-message-title { font-size: 13px; font-weight: 600; color: #ffffff; }
+.liland-message-subtitle { font-size: 11px; color: rgba(255,255,255,0.55); }
+.liland-message-button {
+    font-size: 12px; font-weight: 600; color: #ffffff;
+    padding: 6px 12px; border-radius: 99px;
+    background-color: rgba(255,255,255,0.16);
+}
+.liland-message-button:hover { background-color: rgba(255,255,255,0.24); }
