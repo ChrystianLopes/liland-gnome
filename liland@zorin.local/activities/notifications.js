@@ -204,7 +204,8 @@ export class NotificationActivity {
 
         // The header sits at the top bar's height: keep it in the island's top part.
         const inset = (OPEN_WIDTH - this._island.neckWidth(OPEN_WIDTH)) / 2;
-        this._header.margin_left = this._header.margin_right = inset;
+        // Inline padding, not margins: St resets those to the CSS ones.
+        this._header.style = `padding-left: ${22 + inset}px; padding-right: ${22 + inset}px;`;
         this._header.height = this._island.notchHeight;
 
         this._actions.destroy_all_children();

@@ -190,7 +190,9 @@ export class TopBarTakeover {
             this._island.hold(menu, open);
             // Opened by someone else while the island was closed: open the
             // island under it and put the menu back next to its button.
-            if (open && this._hiddenInTray(indicator)) {
+            // Not for menus shown somewhere else on purpose (e.g. the
+            // clipboard's "open at the pointer").
+            if (open && menu.sourceActor === indicator && this._hiddenInTray(indicator)) {
                 this._island.openTab('tray', false);
                 this._afterLayout('_repositionId', () => {
                     if (menu.isOpen && indicator.mapped)
