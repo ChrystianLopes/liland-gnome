@@ -15,56 +15,82 @@ import {MusicPlayer, OPEN_CONTENT_HEIGHT, MESSAGE_CONTENT_HEIGHT} from './activi
 
 // Liquid Glass: what's behind the island (wallpaper, windows) is blurred by
 // Shell.BlurEffect (the lock screen's). It only blurs rectangles and can't be
-// cut to a shape afterwards (an offscreen effect around it would make it blur
-// an empty buffer), so the blur is made of rectangles that all lie inside the
-// island's shape: the body between the side walls, the bottom strip and, for
-// each round bottom corner, a few slices that stay inside the curve. The tint
-// drawn over it (_drawShape) covers the thin crescents the slices leave.
-const CORNER_SLICES = 10;
+// cut to a shape afterwards (an offscreen effect around it makes it blur an
+// empty buffer), and blurring several pieces leaves seams. So: one blurred
+// rectangle between the island's side walls, and in the two bottom corners,
+// where that rectangle goes past the round edge, the sharp scene is painted
+// back over the outside of the curve: a clone of the windows and wallpaper
+// (global.window_group), masked by CornerMask. The ears at the top (outside
+// the walls) aren't blurred at all; the tint (_drawShape) covers the rest.
+const CornerMask = GObject.registerClass(
+class LilandCornerMask extends Clutter.ShaderEffect {
+    // left: the corner's curve is centered on its top-right point (the
+    // island's bottom-left corner); else on its top-left one.
+    _init(left) {
+        super._init();
+        this._left = left;
+    }
+
+    vfunc_get_static_shader_source() {
+        return `uniform sampler2D tex;
+uniform float size;
+uniform float left;
+void main() {
+    vec2 uv = cogl_tex_coord_in[0].st;
+    vec2 p = uv * vec2(size, size);
+    vec2 c = left > 0.5 ? vec2(size, 0.0) : vec2(0.0, 0.0);
+    // Keep what's outside the curve (the island's shape is inside it).
+    float a = clamp(length(p - c) - size + 0.5, 0.0, 1.0);
+    cogl_color_out = texture2D(tex, uv) * a;
+}`;
+    }
+
+    vfunc_paint_target(node, paintContext) {
+        // Non-integer values: GJS hands floats (not ints) to the shader.
+        this.set_uniform_value('tex', 0);
+        this.set_uniform_value('size', this.get_actor().width + 1e-4);
+        this.set_uniform_value('left', this._left ? 1.0001 : 0.0001);
+        super.vfunc_paint_target(node, paintContext);
+    }
+});
 
 class GlassBackdrop {
     constructor(radius) {
         this.actor = new Clutter.Actor({x_expand: true, y_expand: true, reactive: false});
-        this._pieces = [];
-        for (let i = 0; i < 3 + 2 * CORNER_SLICES; i++) {
-            const piece = new Clutter.Actor({reactive: false});
-            piece.add_effect(new Shell.BlurEffect({mode: Shell.BlurMode.BACKGROUND, radius, brightness: 1.0}));
-            this.actor.add_child(piece);
-            this._pieces.push(piece);
-        }
+        this._blur = new Clutter.Actor({reactive: false});
+        this._blur.add_effect(new Shell.BlurEffect({mode: Shell.BlurMode.BACKGROUND, radius, brightness: 1.0}));
+        this.actor.add_child(this._blur);
+        this._corners = [true, false].map(left => {
+            const corner = new Clutter.Actor({reactive: false, clip_to_allocation: true});
+            corner.add_effect(new CornerMask(left));
+            const clone = new Clutter.Clone({source: global.window_group, reactive: false});
+            corner.add_child(clone);
+            this.actor.add_child(corner);
+            return {corner, clone, left};
+        });
         this._key = '';
     }
 
-    // The island is w x h, its side walls `ear` in from the edges, its bottom
-    // corners `bottom` round.
-    update(w, h, ear, bottom) {
-        const key = [w, h, ear, bottom].map(Math.round).join(',');
+    // The island is w x h at (x, y) on the stage, its side walls `ear` in from
+    // the edges, its bottom corners `bottom` round.
+    update(x, y, w, h, ear, bottom) {
+        const key = [x, y, w, h, ear, bottom].map(Math.round).join(',');
         if (key === this._key)
             return;
         this._key = key;
-        const rects = [];
-        // Body (down to where the bottom corners start) and bottom strip.
-        rects.push([ear, 0, w - 2 * ear, h - bottom]);
-        rects.push([ear + bottom, h - bottom, w - 2 * (ear + bottom), bottom]);
-        // Corner slices: each as wide as the curve allows at its lower edge.
-        const slice = bottom / CORNER_SLICES;
-        for (let i = 0; i < CORNER_SLICES; i++) {
-            const dy = (i + 1) * slice;
-            const inset = bottom - Math.sqrt(Math.max(0, bottom * bottom - dy * dy));
-            const y = h - bottom + i * slice;
-            rects.push([ear + inset, y, bottom - inset, slice]);
-            rects.push([w - ear - bottom, y, bottom - inset, slice]);
+        this._blur.set_position(Math.round(ear), 0);
+        this._blur.set_size(Math.max(0, Math.round(w - 2 * ear)), Math.max(0, Math.round(h)));
+        const size = Math.round(bottom);
+        for (const {corner, clone, left} of this._corners) {
+            const cx = Math.round(left ? ear : w - ear - bottom);
+            const cy = Math.round(h - bottom);
+            corner.visible = size >= 1;
+            corner.set_position(cx, cy);
+            corner.set_size(size, size);
+            // The clone shows the scene where it is on the stage.
+            clone.set_position(-Math.round(x) - cx, -Math.round(y) - cy);
+            clone.set_size(global.stage.width, global.stage.height);
         }
-        rects.push([0, 0, 0, 0]);
-        this._pieces.forEach((piece, i) => {
-            const [x, y, rw, rh] = rects[i] ?? [0, 0, 0, 0];
-            const shown = rw >= 1 && rh >= 1;
-            piece.visible = shown;
-            if (shown) {
-                piece.set_position(Math.round(x), Math.round(y));
-                piece.set_size(Math.ceil(rw), Math.ceil(rh));
-            }
-        });
     }
 }
 
@@ -156,15 +182,23 @@ export const Island = GObject.registerClass({
 
         // Liquid Glass (see GlassBackdrop), under the tint, and light / dark
         // style.
-        this._glassShape = null;
         this._glass = new GlassBackdrop(GLASS_BLUR_RADIUS);
         this._glass.actor.visible = false;
         this.insert_child_below(this._glass.actor, this._bg);
+        for (const prop of ['x', 'y', 'width', 'height'])
+            this.connect(`notify::${prop}`, () => this._syncGlass());
         this._interfaceSettings = new Gio.Settings({schema_id: 'org.gnome.desktop.interface'});
         this._styleIds = [
-            this._interfaceSettings.connect('changed::color-scheme', () => this._syncStyle()),
-            settings.connect('changed::glass-effect', () => this._syncStyle()),
+            [this._interfaceSettings, this._interfaceSettings.connect('changed::color-scheme', () => this._syncStyle())],
+            [settings, settings.connect('changed::glass-effect', () => this._syncStyle())],
         ];
+        // The shell theme (User Themes extension), if any: menus shown in the
+        // island are drawn by it, so the island is light only with a light one.
+        const source = Gio.SettingsSchemaSource.get_default();
+        if (source?.lookup('org.gnome.shell.extensions.user-theme', true)) {
+            this._userTheme = new Gio.Settings({schema_id: 'org.gnome.shell.extensions.user-theme'});
+            this._styleIds.push([this._userTheme, this._userTheme.connect('changed::name', () => this._syncStyle())]);
+        }
         this._syncStyle();
 
         this._music = new MusicPlayer(nowPlaying, levels, {
@@ -405,9 +439,9 @@ export const Island = GObject.registerClass({
         }
     }
 
-    _drawShape(area) {
-        const cr = area.get_context();
-        const [w, h] = area.get_surface_size();
+    // The island's shape for a w x h size: f (how much the body sticks out on
+    // each side of the top part), ear / top radius, shoulders, bottom radius.
+    _shape(w, h) {
         const notchH = this._notchHeight;
         const tall = ['message', 'tray', 'activity'].includes(this.mode) ? this.mode : 'open';
         const [, fullH] = this._sizeFor(tall);
@@ -423,13 +457,18 @@ export const Island = GObject.registerClass({
         const s = f > 0 ? Math.max(0, Math.min(10, f / 2, notchH - topR, bodyH / 2)) : 0;
         const botR = Math.max(0, Math.min(lerp(small[1], base[1], t), (w - topR * 2) / 2,
             f > 0 ? bodyH - s : h - topR));
+        return {notchH, f, topR, s, botR};
+    }
 
+    _drawShape(area) {
+        const cr = area.get_context();
+        const [w, h] = area.get_surface_size();
+        const {notchH, f, topR, s, botR} = this._shape(w, h);
         const style = this._light ? GLASS.light : GLASS.dark;
         const glass = this._settings.get_boolean('glass-effect') && f === 0;
         if (f === 0) {
-            // The island's own shape (GlassBackdrop stays inside it): concave ears
-            // at the top corners, round bottom corners.
-            this._glassShape = {ear: topR, bottom: botR};
+            // The island's own shape: concave ears at the top corners, round
+            // bottom corners.
             cr.moveTo(0, 0);
             cr.arc(0, topR, topR, -Math.PI / 2, 0);
             cr.lineTo(topR, h - botR);
@@ -442,7 +481,6 @@ export const Island = GObject.registerClass({
         } else {
             // With a narrower top part (the top bar is there): the notch shape
             // with shoulders. Clockwise from the top-left corner.
-            this._glassShape = null;
             cr.moveTo(f, 0);
             quadTo(cr, [f, 0], [f + topR, 0], [f + topR, topR]);
             cr.lineTo(f + topR, notchH - s);
@@ -461,7 +499,6 @@ export const Island = GObject.registerClass({
             quadTo(cr, [w - f - topR, topR], [w - f - topR, 0], [w - f, 0]);
             cr.closePath();
         }
-        this._syncGlassEffects(glass, w, h);
 
         if (glass) {
             // Tint over the blur, a soft shine from the top, a thin bright rim.
@@ -482,20 +519,29 @@ export const Island = GObject.registerClass({
         cr.$dispose();
     }
 
-    // The blur follows the island's shape: only with glass on and while the
-    // island is drawn (not the invisible idle one).
-    _syncGlassEffects(glass, w, h) {
-        const shown = glass && this._glassShape !== null && this._bg.opacity > 0 &&
-            !(this.mode === 'idle' && !this._tray);
-        if (shown)
-            this._glass.update(w, h, this._glassShape.ear, this._glassShape.bottom);
+    // The glass follows the island's size, place and shape (outside of the
+    // paint cycle): only with glass on, the plain shape (no narrower top
+    // part) and while the island is drawn (not the invisible idle one).
+    _syncGlass() {
+        const {f, topR, botR} = this._shape(this.width, this.height);
+        const shown = this._settings.get_boolean('glass-effect') && f === 0 &&
+            this._bg.opacity > 0 && !(this.mode === 'idle' && !this._tray);
+        if (shown) {
+            const [x, y] = this.get_transformed_position();
+            this._glass.update(x, y, this.width, this.height, topR, botR);
+        }
         if (this._glass.actor.visible !== shown)
             this._glass.actor.visible = shown;
     }
 
-    // Light / dark style and glass on / off: restyle everything.
+    // Light / dark style and glass on / off: restyle everything. Light only
+    // when it all is: the color scheme, the shell theme (GNOME 46's own one
+    // is dark; menus shown in the island use it) and the island being the
+    // top bar (else it's a black notch).
     _syncStyle() {
-        this._light = this._interfaceSettings.get_string('color-scheme') !== 'prefer-dark';
+        const lightScheme = this._interfaceSettings.get_string('color-scheme') !== 'prefer-dark';
+        const lightShell = /light/i.test(this._userTheme?.get_string('name') ?? '');
+        this._light = lightScheme && lightShell && Boolean(this._tray);
         if (this._light)
             this.add_style_class_name('liland-light');
         else
@@ -503,6 +549,7 @@ export const Island = GObject.registerClass({
         if (this._menu)
             this._styleMenu(this._menu._boxPointer);
         this._bg.queue_repaint();
+        this._syncGlass();
     }
 
     _styleMenu(pointer) {
@@ -596,6 +643,7 @@ export const Island = GObject.registerClass({
         if (!tray && this._tab === 'tray')
             this._tab = 'music';
         this._holds.clear();
+        this._syncStyle();
         this._panelGap = undefined;
         this._measurePanel();
         this._syncHeaderInsets();
@@ -909,9 +957,13 @@ export const Island = GObject.registerClass({
             opacity: to === 'idle' && !replaced ? 0 : 255,
             duration: animate ? 250 : 0,
             mode: Clutter.AnimationMode.EASE_OUT_QUAD,
-            onComplete: () => this._bg.queue_repaint(),
+            onComplete: () => {
+                this._bg.queue_repaint();
+                this._syncGlass();
+            },
         });
         this._bg.queue_repaint();
+        this._syncGlass();
         this._applyGeometry(animate);
     }
 
@@ -1084,8 +1136,8 @@ export const Island = GObject.registerClass({
         this.nowPlaying.disconnect(this._npChangedId);
         this.nowPlaying.disconnect(this._npTrackId);
         Main.layoutManager.disconnect(this._monitorsId);
-        this._interfaceSettings.disconnect(this._styleIds[0]);
-        this._settings.disconnect(this._styleIds[1]);
+        for (const [obj, id] of this._styleIds)
+            obj.disconnect(id);
         // The tray's buttons are the top bar's: topbar.js takes them back
         // before the island goes; don't destroy them with it.
         if (this._tray)

@@ -20,6 +20,11 @@ function getInterfaceSettings() {
     return interfaceSettings;
 }
 
+// Called when the extension is disabled: nothing kept around.
+export function releaseAppearance() {
+    interfaceSettings = null;
+}
+
 export function isDarkStyle() {
     return getInterfaceSettings().get_string('color-scheme') === 'prefer-dark';
 }

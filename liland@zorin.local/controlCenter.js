@@ -62,6 +62,16 @@ function addPressEffect(actor) {
     actor.connect('leave-event', release);
 }
 
+// Whether the actor is shown in the island's light style (the island puts
+// 'liland-light' on the menus it shows).
+function inLightStyle(actor) {
+    for (let a = actor; a; a = a.get_parent()) {
+        if (a.has_style_class_name?.('liland-light'))
+            return true;
+    }
+    return false;
+}
+
 function label(text, styleClass) {
     const l = new St.Label({text, style_class: styleClass, y_align: Clutter.ActorAlign.CENTER});
     l.clutter_text.ellipsize = Pango.EllipsizeMode.END;
@@ -487,7 +497,7 @@ class SliderModule extends Mirror {
             cr.arc(x + r, r, r, Math.PI / 2, 3 * Math.PI / 2);
             cr.closePath();
         };
-        const dark = isDarkStyle();
+        const dark = !inLightStyle(this._track);
         const hover = this._track.hover && this._track.reactive;
         // Track.
         pill(0, w);
@@ -578,10 +588,18 @@ class SliderModule extends Mirror {
 
     _flush() {
         const slider = this._slider;
-        if (this._pending === null || !slider)
+        if (!slider) {
+            // The item went away: nothing to send anymore.
+            this._pending = null;
             return;
-        if (this._pending !== this._written)
-            slider.value = this._pending * slider.maximum_value;
+        }
+        if (this._pending === null)
+            return;
+        // Against GNOME's current level, not the last one sent: it may have
+        // changed meanwhile (volume keys...).
+        const value = this._pending * slider.maximum_value;
+        if (Math.abs(slider.value - value) > 1e-6)
+            slider.value = value;
         this._written = this._pending;
         this._pending = null;
     }
@@ -895,19 +913,20 @@ export class ControlCenter {
 
     // A connectivity row's list (Wi-Fi networks, Bluetooth devices): GNOME's
     // own, shown over GNOME's grid inside the island ("‹ Control Center"
-    // comes back). Turned on first if it's off.
+    // comes back). Turned on first if it's off. If no list shows up (e.g.
+    // nothing to list), GNOME's grid is shown, with that toggle in it.
     _openDetails(toggle) {
         this._cancelDetails();
         const open = () => {
             this._showNative(true);
             toggle.menu.open(true);
         };
+        if (!toggle.checked)
+            activateItem(toggle);
         if (toggle.menuEnabled) {
             open();
             return;
         }
-        if (!toggle.checked)
-            activateItem(toggle);
         // Its list becomes available once it's on (and has found something).
         const id = toggle.connect('notify::menu-enabled', () => {
             if (!toggle.menuEnabled)
@@ -919,6 +938,8 @@ export class ControlCenter {
         const timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 3000, () => {
             this._detailsWait = null;
             toggle.disconnect(id);
+            if (this._menu.isOpen)
+                this._showNative(true);
             return GLib.SOURCE_REMOVE;
         });
         this._detailsWait = {toggle, id, timeoutId};

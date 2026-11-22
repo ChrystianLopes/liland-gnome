@@ -11,6 +11,7 @@ import {Extension} from 'resource:///org/gnome/shell/extensions/extension.js';
 import {NowPlaying} from './mpris.js';
 import {LiveLevels} from './levels.js';
 import {Island} from './island.js';
+import {releaseAppearance} from './appearance.js';
 import {OsdActivity} from './activities/osd.js';
 import {NotificationActivity} from './activities/notifications.js';
 import {TopBarTakeover} from './topbar.js';
@@ -91,6 +92,7 @@ export default class LilandExtension extends Extension {
     }
 
     disable() {
+        releaseAppearance();
         if (this._quitId)
             GLib.source_remove(this._quitId);
         this._quitId = 0;
