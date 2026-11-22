@@ -12,6 +12,13 @@ const PLAYER_IFACE = 'org.mpris.MediaPlayer2.Player';
 const ROOT_IFACE = 'org.mpris.MediaPlayer2';
 
 const nowSeconds = () => GLib.get_monotonic_time() / 1e6;
+// Covers are small; anything bigger than this is not downloaded.
+const MAX_ARTWORK_BYTES = 8 * 1024 * 1024;
+const READ_CHUNK = 64 * 1024;
+// After a network error, try the same cover again at most this often.
+const ARTWORK_RETRY_SECONDS = 20;
+
+class PermanentError extends Error {}
 
 function unpack(variant) {
     return variant ? variant.recursiveUnpack() : undefined;
@@ -209,6 +216,7 @@ export class NowPlaying extends EventEmitter {
         this._lastSeen = new Map();
         this._lastActivity = new Map();
         this._artworkKey = null;
+        this._artworkRetryAt = null;
         this._startTime = nowSeconds();
         this._cancellable = new Gio.Cancellable();
         this._session = new Soup.Session({timeout: 10});
@@ -304,8 +312,12 @@ export class NowPlaying extends EventEmitter {
             const isSongChange = this._artworkKey !== null || now - this._startTime > 3;
             this._artworkKey = key;
             this._loadArtwork(key, isSongChange && key !== null);
-        } else if (snap && !this.artworkPath && snap.track.artUrl && !this._loadingArtwork) {
-            // Some players publish the cover a moment after the title.
+        } else if (snap && !this.artworkPath && snap.track.artUrl && this._artworkLoadingKey !== key &&
+                   (snap.track.artUrl !== this._artworkTriedUrl ||
+                    (this._artworkRetryAt !== null && now >= this._artworkRetryAt))) {
+            // Some players publish the cover a moment after the title. A URL
+            // that failed isn't fetched again on every player update: never
+            // for permanent errors (404, too large), with a pause otherwise.
             this._loadArtwork(key, false);
         }
         this.emit('changed');
@@ -314,19 +326,32 @@ export class NowPlaying extends EventEmitter {
     async _loadArtwork(key, announce) {
         this.artworkPath = null;
         this.accentColor = NowPlaying.defaultAccent;
-        const url = this.activePlayer?.snapshot?.track.artUrl;
+        const url = this.activePlayer?.snapshot?.track.artUrl ?? null;
+        this._artworkTriedUrl = url;
+        this._artworkRetryAt = null;
         let path = null;
-        this._loadingArtwork = Boolean(url);
         if (url) {
+            this._artworkLoadingKey = key;
             try {
                 path = await this._fetchArtwork(url);
             } catch (e) {
-                console.debug(`Liland: artwork failed: ${e.message}`);
+                if (!e.matches?.(Gio.IOErrorEnum, Gio.IOErrorEnum.CANCELLED))
+                    console.debug(`Liland: artwork failed: ${e.message}`);
+                if (!(e instanceof PermanentError) && this._artworkTriedUrl === url)
+                    this._artworkRetryAt = nowSeconds() + ARTWORK_RETRY_SECONDS;
             }
+            // A newer load may have started meanwhile; only clear our own flag.
+            if (this._artworkLoadingKey === key)
+                this._artworkLoadingKey = null;
         }
-        this._loadingArtwork = false;
         if (this._artworkKey !== key)
             return;
+        // The player switched to another cover while this one was loading.
+        const current = this.activePlayer?.snapshot?.track.artUrl ?? null;
+        if (current && current !== url) {
+            this._loadArtwork(key, announce);
+            return;
+        }
         this.artworkPath = path;
         this.accentColor = (path && accentFor(path)) ?? NowPlaying.defaultAccent;
         this.emit('changed');
@@ -340,28 +365,70 @@ export class NowPlaying extends EventEmitter {
             return Promise.resolve(GLib.file_test(path, GLib.FileTest.EXISTS) ? path : null);
         }
         if (url.startsWith('/'))
-            return Promise.resolve(url);
+            return Promise.resolve(GLib.file_test(url, GLib.FileTest.EXISTS) ? url : null);
         if (!/^https?:\/\//.test(url))
             return Promise.resolve(null);
         const hash = GLib.compute_checksum_for_string(GLib.ChecksumType.SHA1, url, -1);
         const path = GLib.build_filenamev([this._cacheDir, hash]);
         if (GLib.file_test(path, GLib.FileTest.EXISTS))
             return Promise.resolve(path);
-        return new Promise((resolve, reject) => {
-            const message = Soup.Message.new('GET', url);
-            this._session.send_and_read_async(message, GLib.PRIORITY_DEFAULT, this._cancellable, (s, res) => {
+        return this._download(url, path);
+    }
+
+    // Downloads url into path, refusing anything over MAX_ARTWORK_BYTES so a
+    // bad server can't make the shell hold a huge response in memory.
+    async _download(url, path) {
+        const message = Soup.Message.new('GET', url);
+        if (!message)
+            throw new PermanentError('invalid URL');
+        const stream = await new Promise((resolve, reject) => {
+            this._session.send_async(message, GLib.PRIORITY_DEFAULT, this._cancellable, (s, res) => {
                 try {
-                    const bytes = s.send_and_read_finish(res);
-                    if (message.get_status() !== Soup.Status.OK)
-                        throw new Error(`HTTP ${message.get_status()}`);
-                    GLib.file_set_contents(path, bytes.get_data());
-                    this._pruneCache();
-                    resolve(path);
+                    resolve(s.send_finish(res));
                 } catch (e) {
                     reject(e);
                 }
             });
         });
+        try {
+            const status = message.get_status();
+            if (status !== Soup.Status.OK)
+                throw status >= 400 && status < 500 ? new PermanentError(`HTTP ${status}`) : new Error(`HTTP ${status}`);
+            if (message.get_response_headers().get_content_length() > MAX_ARTWORK_BYTES)
+                throw new PermanentError('cover too large');
+            const chunks = [];
+            let total = 0;
+            for (;;) {
+                // eslint-disable-next-line no-await-in-loop
+                const bytes = await new Promise((resolve, reject) => {
+                    stream.read_bytes_async(READ_CHUNK, GLib.PRIORITY_DEFAULT, this._cancellable, (s, res) => {
+                        try {
+                            resolve(s.read_bytes_finish(res));
+                        } catch (e) {
+                            reject(e);
+                        }
+                    });
+                });
+                const size = bytes.get_size();
+                if (size === 0)
+                    break;
+                total += size;
+                if (total > MAX_ARTWORK_BYTES)
+                    throw new PermanentError('cover too large');
+                chunks.push(bytes.toArray());
+            }
+            const data = new Uint8Array(total);
+            let offset = 0;
+            for (const chunk of chunks) {
+                data.set(chunk, offset);
+                offset += chunk.length;
+            }
+            GLib.file_set_contents(path, data);
+            this._pruneCache();
+            return path;
+        } finally {
+            stream.close_async(GLib.PRIORITY_DEFAULT, null, null);
+        }
     }
 
     _pruneCache() {

@@ -9,7 +9,7 @@ mkdir -p "$(dirname "$DEST")"
 rm -rf "$DEST"
 cp -r "$SRC" "$DEST"
 echo "✓ instalado em $DEST"
-if gnome-extensions list | grep -q "$UUID"; then
+if gnome-extensions info "$UUID" >/dev/null 2>&1; then
   gnome-extensions enable "$UUID" && echo "✓ ativado"
 else
   echo "→ encerre a sessão e entre de novo (Wayland), depois rode: gnome-extensions enable $UUID"

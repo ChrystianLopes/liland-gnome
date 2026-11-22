@@ -1,6 +1,7 @@
 // Liland for GNOME: a dynamic island at the top of the screen to see and
 // control the music that's playing.
 import Gio from 'gi://Gio';
+import GLib from 'gi://GLib';
 import St from 'gi://St';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js';
@@ -58,7 +59,15 @@ export default class LilandExtension extends Extension {
 
         menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem());
         const quit = new PopupMenu.PopupMenuItem(_('Quit Liland'));
-        quit.connect('activate', () => Main.extensionManager.disableExtension(this.uuid));
+        quit.connect('activate', () => {
+            // Disable from the main loop, not inside this menu item's own
+            // 'activate' handler: disabling destroys the menu.
+            this._quitId ||= GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+                this._quitId = 0;
+                Main.extensionManager.disableExtension(this.uuid);
+                return GLib.SOURCE_REMOVE;
+            });
+        });
         menu.addMenuItem(quit);
         return button;
     }
@@ -72,6 +81,9 @@ export default class LilandExtension extends Extension {
     }
 
     disable() {
+        if (this._quitId)
+            GLib.source_remove(this._quitId);
+        this._quitId = 0;
         this._settings.disconnect(this._indicatorId);
         this._indicator?.destroy();
         this._indicator = null;

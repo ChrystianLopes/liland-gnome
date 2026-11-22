@@ -13,6 +13,7 @@ import {_} from './i18n.js';
 // Same numbers as Liland's NotchGeometry / NotchMode.
 const NOTCH_WIDTH = 190;
 const COMPACT_WING = 42;
+const COMPACT_WIDTH = NOTCH_WIDTH + COMPACT_WING * 2;
 const OPEN_WIDTH = 480;
 const OPEN_CONTENT_HEIGHT = 140;
 const MESSAGE_CONTENT_HEIGHT = 70;
@@ -26,6 +27,8 @@ const OPEN_DELAY = 100;
 const CLOSE_DELAY = 150;
 const PEEK_DURATION = 3500;
 const ANIM_MS = 380;
+// Space kept free between the island and the top bar items next to it.
+const PANEL_GAP_MARGIN = 8;
 
 const SPOTIFY_IDS = ['spotify.desktop', 'spotify_spotify.desktop', 'com.spotify.Client.desktop'];
 
@@ -174,6 +177,7 @@ class LilandIsland extends St.Widget {
         this._isInteracting = false;
         this._isPeeking = false;
         this._timeouts = {};
+        this._panelGap = Infinity;
 
         this._bg = new St.DrawingArea({x_expand: true, y_expand: true});
         this._bg.connect('repaint', area => this._drawShape(area));
@@ -202,8 +206,21 @@ class LilandIsland extends St.Widget {
         this._levelsStopId = levels.connect('stopped', () => {
             this.liveLevels = null;
         });
-        this._monitorsId = Main.layoutManager.connect('monitors-changed', () => this._applyGeometry(false));
+        this._monitorsId = Main.layoutManager.connect('monitors-changed', () => {
+            this._applyGeometry(false);
+            this._remeasurePanel();
+        });
+        // Top bar items can appear, disappear or move (indicators, other
+        // extensions), and the top bar itself can move or be shown/hidden:
+        // measure again (after the relayout) so the island never covers them.
+        const remeasure = () => this._remeasurePanel();
+        this._panelSignals = [
+            ...this._panelBoxes().map(box => [box, box.connect('notify::allocation', remeasure)]),
+            [Main.layoutManager.panelBox, Main.layoutManager.panelBox.connect('notify::allocation', remeasure)],
+            [Main.panel, Main.panel.connect('notify::mapped', remeasure)],
+        ];
 
+        this._measurePanel();
         this._sync(true);
     }
 
@@ -212,10 +229,7 @@ class LilandIsland extends St.Widget {
     get _notchHeight() {
         // Like Liland on Macs without a notch: as tall as the menu bar (the
         // top bar here), when the top bar is actually at the top.
-        const monitor = Main.layoutManager.primaryMonitor;
-        const [, panelY] = Main.panel.get_transformed_position();
-        const atTop = monitor && Main.panel.mapped && Math.abs(panelY - monitor.y) < 2;
-        return atTop ? Math.max(Main.panel.height, 24) : 32;
+        return this._panelAtTop() ? Math.max(Main.panel.height, 24) : 32;
     }
 
     _sizeFor(mode) {
@@ -226,6 +240,91 @@ class LilandIsland extends St.Widget {
         case 'message': return [OPEN_WIDTH, h + MESSAGE_CONTENT_HEIGHT];
         default: return [NOTCH_WIDTH, h];
         }
+    }
+
+    _remeasurePanel() {
+        this._later('panel', 50, () => this._measurePanel());
+    }
+
+    _panelBoxes() {
+        return [Main.panel._leftBox, Main.panel._centerBox, Main.panel._rightBox].filter(Boolean);
+    }
+
+    _panelAtTop() {
+        const monitor = Main.layoutManager.primaryMonitor;
+        if (!monitor || !Main.panel.mapped)
+            return false;
+        const [, panelY] = Main.panel.get_transformed_position();
+        return Math.abs(panelY - monitor.y) < 2;
+    }
+
+    // Width of the free space at the center of the top bar, i.e. how wide the
+    // island can be at the top bar's height without covering any of its items
+    // (workspace indicator, clock, tray icons...). 0 if something sits at the
+    // very center (e.g. GNOME's default clock).
+    _measurePanel() {
+        const monitor = Main.layoutManager.primaryMonitor;
+        let gap = Infinity;
+        if (monitor && this._panelAtTop()) {
+            const cx = monitor.x + monitor.width / 2;
+            let left = monitor.x;
+            let right = monitor.x + monitor.width;
+            for (const box of this._panelBoxes()) {
+                for (const child of box.get_children()) {
+                    if (!child.visible || child.width <= 0)
+                        continue;
+                    const rect = child.get_transformed_extents();
+                    const x1 = rect.get_x(), x2 = x1 + rect.get_width();
+                    if (x2 <= cx)
+                        left = Math.max(left, x2);
+                    else if (x1 >= cx)
+                        right = Math.min(right, x1);
+                    else
+                        left = right = cx;
+                }
+            }
+            gap = Math.max(0, 2 * (Math.min(cx - left, right - cx) - PANEL_GAP_MARGIN));
+        }
+        if (gap === this._panelGap)
+            return;
+        this._panelGap = gap;
+        // Keep the header (which sits at the top bar's height) inside the top part.
+        const inset = (OPEN_WIDTH - this._neckWidth(OPEN_WIDTH)) / 2;
+        this._header.margin_left = this._header.margin_right = inset;
+        this._bg.queue_repaint();
+    }
+
+    // Width of the island's top part (the part at the top bar's height). The
+    // open player only grows wider below the top bar.
+    _neckWidth(w) {
+        return Math.min(w, Math.max(this._panelGap, COMPACT_WIDTH));
+    }
+
+    // Rectangles (local coordinates) that take the pointer for a w x h island.
+    // Outside them, clicks go through to the top bar.
+    _hitBoxes(w, h, mode) {
+        const notchH = this._notchHeight;
+        if (mode === 'idle') {
+            // Invisible: only reacts where the top bar has nothing.
+            const neck = Math.min(w, this._panelGap);
+            return neck > 0 ? [[(w - neck) / 2, 0, (w + neck) / 2, h]] : [];
+        }
+        const neck = this._neckWidth(w);
+        if (neck >= w || h <= notchH)
+            return [[(w - neck) / 2, 0, (w + neck) / 2, h]];
+        // The body is drawn between the side walls (see _drawShape), not
+        // over the whole width: leave the transparent strips to the windows.
+        const wall = Math.min((RADII[mode] ?? RADII.open)[0], neck / 4);
+        return [[(w - neck) / 2, 0, (w + neck) / 2, notchH], [wall, notchH, w - wall, h]];
+    }
+
+    vfunc_pick(context) {
+        if (this.reactive) {
+            for (const [x1, y1, x2, y2] of this._hitBoxes(this.width, this.height, this.mode))
+                this.pick_box(context, Clutter.ActorBox.new(x1, y1, x2, y2));
+        }
+        for (const child of this.get_children())
+            child.pick(context);
     }
 
     _applyGeometry(animate) {
@@ -254,21 +353,38 @@ class LilandIsland extends St.Widget {
         const cr = area.get_context();
         const [w, h] = area.get_surface_size();
         const notchH = this._notchHeight;
-        const openH = notchH + OPEN_CONTENT_HEIGHT;
-        const t = clamp01((h - notchH) / (openH - notchH));
+        const [, fullH] = this._sizeFor(this.mode === 'message' ? 'message' : 'open');
+        const t = clamp01((h - notchH) / Math.max(1, fullH - notchH));
         const base = this.mode === 'message' ? RADII.message : RADII.open;
         const small = this.mode === 'idle' ? RADII.idle : RADII.compact;
-        const topR = Math.max(0, Math.min(lerp(small[0], base[0], t), w / 4, h / 2));
-        const botR = Math.max(0, Math.min(lerp(small[1], base[1], t), (w - topR * 2) / 2, h - topR));
+        const neck = this._neckWidth(w);
+        // f: how much the body sticks out on each side of the top part.
+        const f = Math.max(0, (w - neck) / 2);
+        const bodyH = Math.max(0, h - notchH);
+        const topR = Math.max(0, Math.min(lerp(small[0], base[0], t), neck / 4, h / 2));
+        // s: radius of the curve where the top part flares out into the body.
+        const s = f > 0 ? Math.max(0, Math.min(10, f / 2, notchH - topR, bodyH / 2)) : 0;
+        const botR = Math.max(0, Math.min(lerp(small[1], base[1], t), (w - topR * 2) / 2,
+            f > 0 ? bodyH - s : h - topR));
 
-        cr.moveTo(0, 0);
-        quadTo(cr, [0, 0], [topR, 0], [topR, topR]);
+        // Clockwise from the top-left corner. With f = 0 (and so s = 0) this is
+        // the plain notch shape.
+        cr.moveTo(f, 0);
+        quadTo(cr, [f, 0], [f + topR, 0], [f + topR, topR]);
+        cr.lineTo(f + topR, notchH - s);
+        quadTo(cr, [f + topR, notchH - s], [f + topR, notchH], [f + topR - s, notchH]);
+        cr.lineTo(topR + s, notchH);
+        quadTo(cr, [topR + s, notchH], [topR, notchH], [topR, notchH + s]);
         cr.lineTo(topR, h - botR);
         quadTo(cr, [topR, h - botR], [topR, h], [topR + botR, h]);
         cr.lineTo(w - topR - botR, h);
         quadTo(cr, [w - topR - botR, h], [w - topR, h], [w - topR, h - botR]);
-        cr.lineTo(w - topR, topR);
-        quadTo(cr, [w - topR, topR], [w - topR, 0], [w, 0]);
+        cr.lineTo(w - topR, notchH + s);
+        quadTo(cr, [w - topR, notchH + s], [w - topR, notchH], [w - topR - s, notchH]);
+        cr.lineTo(w - f - topR + s, notchH);
+        quadTo(cr, [w - f - topR + s, notchH], [w - f - topR, notchH], [w - f - topR, notchH - s]);
+        cr.lineTo(w - f - topR, topR);
+        quadTo(cr, [w - f - topR, topR], [w - f - topR, 0], [w - f, 0]);
         cr.closePath();
         cr.setSourceRGBA(0, 0, 0, 1);
         cr.fill();
@@ -517,6 +633,8 @@ class LilandIsland extends St.Widget {
     }
 
     _transition(from, to, animate) {
+        if (from === 'open' && to !== 'open')
+            this._endDrag(false);
         const oldContent = this._contentFor(from);
         const newContent = this._contentFor(to);
         const notchH = this._notchHeight;
@@ -605,6 +723,8 @@ class LilandIsland extends St.Widget {
     }
 
     _beginDrag(event) {
+        if (event.get_button() !== Clutter.BUTTON_PRIMARY || this._dragId)
+            return Clutter.EVENT_PROPAGATE;
         const [x] = event.get_coords();
         this._isInteracting = true;
         this._dragFraction = this._fractionAt(x);
@@ -612,11 +732,17 @@ class LilandIsland extends St.Widget {
         this._dragId = global.stage.connect('captured-event', (_s, ev) => {
             const type = ev.type();
             if (type === Clutter.EventType.MOTION) {
+                // The release went somewhere else (overview, lock screen,
+                // another grab): drop the drag without seeking.
+                if (!(ev.get_state() & Clutter.ModifierType.BUTTON1_MASK)) {
+                    this._endDrag();
+                    return Clutter.EVENT_PROPAGATE;
+                }
                 this._dragFraction = this._fractionAt(ev.get_coords()[0]);
                 this._updateProgress();
                 return Clutter.EVENT_STOP;
             }
-            if (type === Clutter.EventType.BUTTON_RELEASE) {
+            if (type === Clutter.EventType.BUTTON_RELEASE && ev.get_button() === Clutter.BUTTON_PRIMARY) {
                 const fraction = this._fractionAt(ev.get_coords()[0]);
                 const duration = this.nowPlaying.track?.duration ?? 0;
                 this.nowPlaying.seek(fraction * duration);
@@ -625,29 +751,41 @@ class LilandIsland extends St.Widget {
             }
             return Clutter.EVENT_PROPAGATE;
         });
+        this._overviewId = Main.overview.connect('showing', () => this._endDrag());
         return Clutter.EVENT_STOP;
     }
 
-    _endDrag() {
-        if (this._dragId) {
-            global.stage.disconnect(this._dragId);
-            this._dragId = 0;
-        }
+    _endDrag(checkHover = true) {
+        if (!this._dragId)
+            return;
+        global.stage.disconnect(this._dragId);
+        this._dragId = 0;
+        Main.overview.disconnect(this._overviewId);
+        this._overviewId = 0;
         this._dragFraction = undefined;
         this._isInteracting = false;
         this._updateProgress();
-        this._handleHover();
+        if (checkHover)
+            this._handleHover();
     }
 
     // ---------- animation ticker (equalizers + progress) ----------
 
+    _needsTicker() {
+        return this.mode !== 'idle' && (this._playTarget === 1 || this.playFactor > 0.001 || this.mode === 'open');
+    }
+
     _updateTicker() {
-        const needs = this.mode !== 'idle' && (this._playTarget === 1 || this.playFactor > 0 || this.mode === 'open');
+        const needs = this._needsTicker();
         if (needs && !this._tickId) {
             this._tickId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => this._tick());
-        } else if (!needs && this._tickId) {
-            GLib.source_remove(this._tickId);
+        } else if (!needs) {
+            if (this._tickId)
+                GLib.source_remove(this._tickId);
             this._tickId = 0;
+            // Nothing animates the bars anymore: land on the target so the
+            // next play/pause eases from the right place.
+            this.playFactor = this._playTarget ?? 0;
         }
     }
 
@@ -664,10 +802,11 @@ class LilandIsland extends St.Widget {
             if (this._progressCounter === 0 || this._dragFraction !== undefined)
                 this._updateProgress();
         }
-        const keep = this.mode !== 'idle' && (this._playTarget === 1 || this.playFactor > 0.001 || this.mode === 'open');
-        if (!keep)
-            this._tickId = 0;
-        return keep ? GLib.SOURCE_CONTINUE : GLib.SOURCE_REMOVE;
+        if (this._needsTicker())
+            return GLib.SOURCE_CONTINUE;
+        this._tickId = 0;
+        this.playFactor = this._playTarget ?? 0;
+        return GLib.SOURCE_REMOVE;
     }
 
     // ---------- hover / open / close (same logic as NotchWindowController) ----------
@@ -689,12 +828,16 @@ class LilandIsland extends St.Widget {
     }
 
     _pointerNear(margin) {
-        const [px, py] = global.get_pointer();
-        const [x, y] = this.get_transformed_position();
-        const [w, h] = this._sizeFor(this.mode);
         const monitor = Main.layoutManager.primaryMonitor;
-        const cx = monitor.x + (monitor.width - w) / 2;
-        return px >= cx - margin && px <= cx + w + margin && py >= y - margin && py <= y + h + margin && x !== undefined;
+        if (!monitor)
+            return false;
+        const [px, py] = global.get_pointer();
+        const [w, h] = this._sizeFor(this.mode);
+        const ox = monitor.x + (monitor.width - w) / 2;
+        const oy = monitor.y;
+        return this._hitBoxes(w, h, this.mode).some(([x1, y1, x2, y2]) =>
+            px >= ox + x1 - margin && px <= ox + x2 + margin &&
+            py >= oy + y1 - margin && py <= oy + y2 + margin);
     }
 
     _handleHover() {
@@ -772,8 +915,9 @@ class LilandIsland extends St.Widget {
         if (this._tickId)
             GLib.source_remove(this._tickId);
         this._tickId = 0;
-        if (this._dragId)
-            global.stage.disconnect(this._dragId);
+        this._endDrag(false);
+        for (const [obj, id] of this._panelSignals)
+            obj.disconnect(id);
         this.nowPlaying.disconnect(this._npChangedId);
         this.nowPlaying.disconnect(this._npTrackId);
         this._levels.disconnect(this._levelsId);
