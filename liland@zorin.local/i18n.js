@@ -19,6 +19,8 @@ const PT = {
     'Control Center': 'Central de Controle',
     'Glass Effect': 'Efeito vidro',
     'Clipboard in the Island': 'Clipboard na ilha',
+    'Clipboard private mode on': 'Modo privado do clipboard ligado',
+    'Clipboard private mode off': 'Modo privado do clipboard desligado',
     'Clipboard': 'Área de transferência',
     'Private Mode': 'Modo privado',
     'Clear History': 'Limpar histórico',

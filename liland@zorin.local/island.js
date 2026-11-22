@@ -74,6 +74,12 @@ class LilandGlassCorner extends Clutter.Actor {
 
     vfunc_allocate(box) {
         this.set_allocation(box);
+        this.allocateClone();
+    }
+
+    // Also called by GlassBackdrop directly: the corner's own allocation is
+    // skipped when its box doesn't change, but the island may have moved.
+    allocateClone() {
         const [x, y] = this._offset;
         this._clone.allocate(Clutter.ActorBox.new(x, y, x + global.stage.width, y + global.stage.height));
     }
@@ -104,6 +110,17 @@ class LilandGlassBackdrop extends Clutter.Actor {
         const h = box.get_height();
         const {topR: ear, botR: bottom} = this._island._shape(w, h);
         this._blur.allocate(Clutter.ActorBox.new(ear, 0, Math.max(ear, w - ear), h));
+        this.syncCorners(box, ear, bottom);
+    }
+
+    // The corners show what's behind them: they follow the island's place on
+    // the stage. Also called by the island when it's laid out (moving at the
+    // same size doesn't lay this actor out again).
+    syncCorners(box = this.get_allocation_box(), ear = null, bottom = null) {
+        if (ear === null)
+            ({topR: ear, botR: bottom} = this._island._shape(box.get_width(), box.get_height()));
+        const w = box.get_width();
+        const h = box.get_height();
         // The island's place in its parent (the stage's ui group, at 0, 0).
         const islandBox = this._island.get_allocation_box();
         for (const corner of this._corners) {
@@ -111,6 +128,7 @@ class LilandGlassBackdrop extends Clutter.Actor {
             const cy = h - bottom;
             corner.setOffset(-(islandBox.x1 + box.x1 + cx), -(islandBox.y1 + box.y1 + cy));
             corner.allocate(Clutter.ActorBox.new(cx, cy, cx + Math.max(0, bottom), cy + Math.max(0, bottom)));
+            corner.allocateClone();
         }
     }
 });
@@ -459,10 +477,13 @@ export const Island = GObject.registerClass({
                 x, y, width: w, height: h,
                 duration: ANIM_MS,
                 mode: Clutter.AnimationMode.EASE_OUT_QUINT,
+                // Whether the glass fits depends on the final shape.
+                onComplete: () => this._syncGlass(),
             });
         } else {
             this.set_position(x, y);
             this.set_size(w, h);
+            this._syncGlass();
         }
     }
 
@@ -485,6 +506,12 @@ export const Island = GObject.registerClass({
         const botR = Math.max(0, Math.min(lerp(small[1], base[1], t), (w - topR * 2) / 2,
             f > 0 ? bodyH - s : h - topR));
         return {notchH, f, topR, s, botR};
+    }
+
+    vfunc_allocate(box) {
+        super.vfunc_allocate(box);
+        if (this._glass?.visible)
+            this._glass.syncCorners();
     }
 
     _drawShape(area) {

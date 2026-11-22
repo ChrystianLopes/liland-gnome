@@ -34,6 +34,8 @@ const PASTE_DELAY = 120;
 const CLEAR_CONFIRM_MS = 3000;
 const TEXT_TYPES = ['text/plain;charset=utf-8', 'UTF8_STRING', 'text/plain', 'STRING'];
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+// Set (to "secret") by password managers on what they copy: never kept.
+const PASSWORD_HINT = 'x-kde-passwordManagerHint';
 const ExtensionState = {ENABLED: 1};
 
 const decoder = new TextDecoder();
@@ -221,6 +223,9 @@ class ClipboardStore {
         if (!entry)
             return;
         entry.favorite = !entry.favorite;
+        // Unpinned: back among the recent ones, at the top (not dropped).
+        if (!entry.favorite)
+            this.entries = [entry, ...this.entries.filter(e => e !== entry)];
         this._trim();
         this._changed();
     }
@@ -446,7 +451,8 @@ class ClipboardView {
         row.connect('notify::hover', () => {
             if (row.hover) {
                 this._selected = index;
-                this._syncSelection();
+                // No scrolling on hover: the list would move under the pointer.
+                this._syncSelection(false);
             }
         });
         return row;
@@ -466,7 +472,7 @@ class ClipboardView {
         return button;
     }
 
-    _syncSelection() {
+    _syncSelection(scroll = true) {
         (this._rows ?? []).forEach((row, i) => {
             const selected = i === this._selected;
             if (selected)
@@ -476,7 +482,7 @@ class ClipboardView {
             row._actions.opacity = selected ? 255 : 0;
         });
         const row = this._rows?.[this._selected];
-        if (row)
+        if (row && scroll)
             this._scrollTo(row);
     }
 
@@ -577,6 +583,40 @@ export class ClipboardService {
         this._settings.set_boolean('clipboard-private', !this.isPrivate);
     }
 
+    // From the shortcut: say it on screen (it changes what gets kept).
+    _togglePrivateWithFeedback() {
+        this.togglePrivate();
+        const on = this.isPrivate;
+        Main.osdWindowManager.show(-1, new Gio.ThemedIcon({name: on ? 'view-conceal-symbolic' : 'view-reveal-symbolic'}),
+            on ? _('Clipboard private mode on') : _('Clipboard private mode off'), null);
+    }
+
+    // GNOME binds Super+V to the notification list by default: while our
+    // shortcut uses a combination GNOME also uses there, take it from GNOME
+    // and give it back when we stop (remembered in our settings, so it's given
+    // back even after a crash).
+    _freeGnomeKeys() {
+        const gnome = new Gio.Settings({schema_id: 'org.gnome.shell.keybindings'});
+        const ours = this._settings.get_strv('clipboard-toggle').map(k => k.toLowerCase());
+        const theirs = gnome.get_strv('toggle-message-tray');
+        const taken = theirs.filter(k => ours.includes(k.toLowerCase()));
+        if (!taken.length)
+            return;
+        gnome.set_strv('toggle-message-tray', theirs.filter(k => !taken.includes(k)));
+        this._settings.set_strv('clipboard-freed-keys',
+            [...new Set([...this._settings.get_strv('clipboard-freed-keys'), ...taken])]);
+    }
+
+    _restoreFreedKeys() {
+        const freed = this._settings.get_strv('clipboard-freed-keys');
+        if (!freed.length)
+            return;
+        const gnome = new Gio.Settings({schema_id: 'org.gnome.shell.keybindings'});
+        const theirs = gnome.get_strv('toggle-message-tray');
+        gnome.set_strv('toggle-message-tray', [...new Set([...theirs, ...freed])]);
+        this._settings.set_strv('clipboard-freed-keys', []);
+    }
+
     _sync() {
         const want = this._settings.get_boolean('clipboard-in-island') && !this._legacyEnabled;
         if (want && !this._active)
@@ -623,8 +663,9 @@ export class ClipboardService {
         });
         Main.panel.addToStatusArea('lilandClipboard', this._button, 0, 'right');
 
+        this._freeGnomeKeys();
         for (const [key, fn] of [['clipboard-toggle', () => this.toggle()],
-            ['clipboard-private-toggle', () => this.togglePrivate()]]) {
+            ['clipboard-private-toggle', () => this._togglePrivateWithFeedback()]]) {
             Main.wm.addKeybinding(key, this._settings, Meta.KeyBindingFlags.NONE,
                 Shell.ActionMode.NORMAL | Shell.ActionMode.OVERVIEW, fn);
         }
@@ -639,6 +680,8 @@ export class ClipboardService {
                 GLib.source_remove(this[name]);
             this[name] = 0;
         }
+        this._ignoreNext = false;
+        this._restoreFreedKeys();
         this._selection.disconnect(this._ownerId);
         this._button.menu.disconnect(this._menuId);
         this._view.destroy();
@@ -669,12 +712,34 @@ export class ClipboardService {
     }
 
     _onCopy() {
-        if (this._ignoreNext || this.isPrivate || this._excluded())
+        // Our own copy (an entry picked): skipped once.
+        if (this._ignoreNext) {
+            this._ignoreNext = false;
+            return;
+        }
+        if (this.isPrivate || this._excluded())
             return;
         const types = this._clipboard.get_mimetypes(St.ClipboardType.CLIPBOARD);
-        const image = IMAGE_TYPES.find(t => types.includes(t));
+        // Password managers (KeePassXC...) mark their copies as secret.
+        if (types.includes(PASSWORD_HINT)) {
+            this._clipboard.get_content(St.ClipboardType.CLIPBOARD, PASSWORD_HINT, (_c, bytes) => {
+                const hint = bytes ? decoder.decode(bytes.toArray()).trim() : '';
+                if (hint !== 'secret')
+                    this._record(types);
+            });
+            return;
+        }
+        this._record(types);
+    }
+
+    _record(types) {
+        if (!this.store)
+            return;
+        // Text when there's text (spreadsheets, documents also offer a picture
+        // of it), else an image.
         const text = TEXT_TYPES.find(t => types.includes(t));
-        const type = image ?? text;
+        const image = text ? null : IMAGE_TYPES.find(t => types.includes(t));
+        const type = text ?? image;
         if (!type)
             return;
         this._clipboard.get_content(St.ClipboardType.CLIPBOARD, type, (_c, bytes) => {
