@@ -249,3 +249,44 @@
 .liland-light .liland-cc-footer-button:hover { background-color: rgba(255,255,255,0.7); }
 .liland-light .liland-cc-back { color: #1d1d1f; background-color: rgba(0,0,0,0.07); }
 .liland-light .liland-cc-back:hover { background-color: rgba(0,0,0,0.12); }
+
+/* ---------- clipboard (clipboard.js) ---------- */
+.liland-clip { width: 360px; spacing: 8px; padding: 4px 4px 2px 4px; }
+.liland-clip-header { spacing: 6px; padding: 0 2px; }
+.liland-clip-title { font-size: 15px; font-weight: 700; color: #ffffff; }
+.liland-clip-header-button {
+    width: 30px; height: 30px; border-radius: 15px;
+    background-color: rgba(255,255,255,0.10);
+    border: 1px solid rgba(255,255,255,0.10);
+    color: rgba(255,255,255,0.85);
+}
+.liland-clip-header-button:hover { background-color: rgba(255,255,255,0.18); }
+.liland-clip-header-button-on { background-color: #5e5ce6; color: #ffffff; }
+.liland-clip-header-button:armed { background-color: #ff453a; color: #ffffff; }
+.liland-clip-search {
+    border-radius: 10px;
+    padding: 6px 10px;
+    background-color: rgba(255,255,255,0.09);
+    border: 1px solid rgba(255,255,255,0.10);
+    color: #ffffff;
+    caret-color: #ffffff;
+    selected-color: #ffffff;
+    selection-background-color: rgba(10,132,255,0.6);
+}
+.liland-clip-search:focus { border-color: rgba(10,132,255,0.8); }
+.liland-clip-search StLabel.hint-text { color: rgba(255,255,255,0.45); }
+.liland-clip-search-icon { icon-size: 14px; color: rgba(255,255,255,0.5); padding-right: 6px; }
+.liland-clip-status { font-size: 12px; color: rgba(255,255,255,0.55); padding: 18px 8px; text-align: center; }
+.liland-clip-scroll { max-height: 380px; }
+.liland-clip-list { spacing: 2px; }
+.liland-clip-section { font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.45); padding: 6px 8px 2px 8px; }
+.liland-clip-row { border-radius: 10px; padding: 6px 8px; }
+.liland-clip-row:selected { background-color: rgba(255,255,255,0.12); }
+.liland-clip-row-box { spacing: 10px; }
+.liland-clip-thumb { width: 44px; height: 30px; border-radius: 6px; background-color: rgba(255,255,255,0.1); }
+.liland-clip-text { font-size: 13px; color: #ffffff; }
+.liland-clip-meta { font-size: 11px; color: rgba(255,255,255,0.5); }
+.liland-clip-actions { spacing: 2px; }
+.liland-clip-row-button { width: 26px; height: 26px; border-radius: 13px; color: rgba(255,255,255,0.75); }
+.liland-clip-row-button:hover { background-color: rgba(255,255,255,0.16); color: #ffffff; }
+.liland-clip-row-favorite .liland-clip-row-button:first-child { color: #ffd60a; }
