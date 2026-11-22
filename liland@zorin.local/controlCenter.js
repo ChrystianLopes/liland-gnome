@@ -13,6 +13,7 @@
 // toggles...). Items are looked up each time the menu opens, as they come
 // and go (e.g. Bluetooth adapters).
 import Clutter from 'gi://Clutter';
+import GLib from 'gi://GLib';
 import Gio from 'gi://Gio';
 import Pango from 'gi://Pango';
 import Shell from 'gi://Shell';
@@ -25,6 +26,13 @@ import {_} from './i18n.js';
 const UNIT = 66;
 const GAP = 12;
 const SCROLL_STEP = 0.05;
+// Sliders: at most one level sent to GNOME per interval while dragging, its
+// echo ignored for a while after the last change, and the fill's animation.
+const SLIDER_WRITE_INTERVAL = 70;
+const SLIDER_SETTLE_MS = 600;
+const SLIDER_ANIM_MS = 180;
+// Holding a connectivity button this long shows its list (networks, devices).
+const LONG_PRESS_MS = 450;
 
 const clamp01 = v => Math.min(Math.max(v, 0), 1);
 
@@ -86,24 +94,74 @@ class Mirror {
 }
 
 // Round button of the connectivity module (airplane, Wi-Fi, Bluetooth...).
+// Like iOS: tap toggles; touch and hold (or right click) shows its list
+// (networks, devices) when it has one (onDetails).
 class RoundToggle extends Mirror {
-    constructor(find, {iconName, color, label}) {
+    constructor(find, {iconName, color, label, onDetails = null}) {
         super(find);
         this._iconName = iconName;
         this._color = color;
+        this._onDetails = onDetails;
+        this._longPressId = 0;
         this.actor = new St.Button({
             style_class: 'liland-cc-round',
             can_focus: true,
             accessible_name: label,
+            button_mask: St.ButtonMask.ONE | St.ButtonMask.THREE,
             x_align: Clutter.ActorAlign.CENTER,
             y_align: Clutter.ActorAlign.CENTER,
             child: new St.Icon({icon_name: iconName, icon_size: 22}),
         });
         addPressEffect(this.actor);
-        this.actor.connect('clicked', () => {
-            if (this.available)
+        this.actor.connect('button-press-event', (_a, event) => {
+            this._longPressed = false;
+            this._cancelLongPress();
+            if (this._onDetails && event.get_button() === Clutter.BUTTON_PRIMARY) {
+                this._longPressId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, LONG_PRESS_MS, () => {
+                    this._longPressId = 0;
+                    this._longPressed = true;
+                    this._details();
+                    return GLib.SOURCE_REMOVE;
+                });
+            }
+            return Clutter.EVENT_PROPAGATE;
+        });
+        this.actor.connect('button-release-event', () => {
+            this._cancelLongPress();
+            return Clutter.EVENT_PROPAGATE;
+        });
+        this.actor.connect('leave-event', () => {
+            this._cancelLongPress();
+            return Clutter.EVENT_PROPAGATE;
+        });
+        this.actor.connect('popup-menu', () => this._details());
+        this.actor.connect('clicked', (_b, button) => {
+            if (this._longPressed) {
+                this._longPressed = false;
+                return;
+            }
+            if (button === Clutter.BUTTON_SECONDARY)
+                this._details();
+            else if (this.available)
                 activateItem(this.item);
         });
+        this.actor.connect('destroy', () => this._cancelLongPress());
+    }
+
+    _cancelLongPress() {
+        if (this._longPressId)
+            GLib.source_remove(this._longPressId);
+        this._longPressId = 0;
+    }
+
+    _details() {
+        if (this._onDetails && this.available && this.item.menu)
+            this._onDetails(this.item);
+    }
+
+    unbind() {
+        this._cancelLongPress();
+        super.unbind();
     }
 
     _sync() {
@@ -142,27 +200,37 @@ class SquareToggle extends Mirror {
 }
 
 // Tall tile that fills from the bottom (brightness, volume), like iOS.
+//
+// Drawn with cairo (the fill is clipped by the tile's rounded shape, so it's
+// round at any level). While the user changes it, the tile shows the user's
+// value and GNOME's echo is ignored: brightness, for one, is applied by
+// gnome-settings-daemon asynchronously and its updates come back late, which
+// would make the fill (and the screen) jump back and forth. Writes to GNOME
+// are coalesced (at most one per SLIDER_WRITE_INTERVAL, the last one always
+// sent), so the screen brightness changes smoothly. Changes coming from
+// elsewhere (volume keys...) are animated.
 class VerticalSlider extends Mirror {
     constructor(find, {iconName, label}) {
         super(find);
         this._iconName = iconName;
         this._sliderIds = [];
+        this._shown = 0;
+        this._written = null;
+        this._pending = null;
+        this._writeId = 0;
+        this._settleId = 0;
         this.actor = new St.Widget({
-            style_class: 'liland-cc-tile liland-cc-vslider',
+            style_class: 'liland-cc-vslider',
             reactive: true,
             can_focus: true,
+            track_hover: true,
             accessible_name: label,
             x_expand: true,
             y_expand: true,
-            clip_to_allocation: true,
             layout_manager: new Clutter.BinLayout(),
         });
-        this._fill = new St.Widget({
-            style_class: 'liland-cc-vslider-fill',
-            x_expand: true,
-            y_expand: true,
-            y_align: Clutter.ActorAlign.END,
-        });
+        this._area = new St.DrawingArea({x_expand: true, y_expand: true});
+        this._area.connect('repaint', area => this._draw(area));
         this._icon = new St.Icon({
             icon_name: iconName,
             icon_size: 22,
@@ -170,14 +238,20 @@ class VerticalSlider extends Mirror {
             x_align: Clutter.ActorAlign.CENTER,
             y_align: Clutter.ActorAlign.END,
         });
-        this.actor.add_child(this._fill);
-        this.actor.add_child(this._icon);
-        this.actor.connect('notify::height', () => this._sync());
+        // The icon at the bottom center, like iOS.
+        const column = new St.BoxLayout({vertical: true, x_expand: true, y_expand: true});
+        column.add_child(new St.Widget({y_expand: true}));
+        column.add_child(this._icon);
+        this.actor.add_child(this._area);
+        this.actor.add_child(column);
+        this.actor.connect('notify::height', () => this._repaint());
+        this.actor.connect('notify::hover', () => this._repaint());
         this.actor.connect('button-press-event', (_a, event) => this._beginDrag(event));
         this.actor.connect('motion-event', (_a, event) => this._drag(event));
         this.actor.connect('button-release-event', (_a, event) => this._release(event));
         this.actor.connect('scroll-event', (_a, event) => this._scroll(event));
         this.actor.connect('key-press-event', (_a, event) => this._key(event));
+        this.actor.connect('destroy', () => this._stopAnimation());
     }
 
     get _slider() {
@@ -192,11 +266,16 @@ class VerticalSlider extends Mirror {
             this._sliderIds = ['value', 'maximum-value'].map(p =>
                 slider.connect(`notify::${p}`, () => this._sync()));
         }
+        // Opening the menu: show the current level right away.
+        this._stopAnimation();
+        this._shown = this._fraction;
         this._sync();
     }
 
     unbind() {
         this._endDrag();
+        this._flush();
+        this._clearTimers();
         this._unbindSlider();
         super.unbind();
     }
@@ -212,6 +291,11 @@ class VerticalSlider extends Mirror {
         return ['visible', 'reactive', 'icon-name', 'gicon'];
     }
 
+    get _available() {
+        return Boolean(this._slider) && Boolean(this.item?.visible);
+    }
+
+    // GNOME's level, 0..1.
     get _fraction() {
         const slider = this._slider;
         if (!slider)
@@ -219,24 +303,137 @@ class VerticalSlider extends Mirror {
         return clamp01(slider.value / Math.max(slider.maximum_value, 1e-6));
     }
 
-    _setFraction(fraction) {
-        const slider = this._slider;
-        if (slider)
-            slider.value = clamp01(fraction) * slider.maximum_value;
+    // The user is changing it (or just did): GNOME's echo is ignored.
+    get _userActive() {
+        return Boolean(this._grab) || this._settleId !== 0;
     }
 
     _sync() {
-        const available = Boolean(this._slider) && Boolean(this.item?.visible);
+        const available = this._available;
         this.actor.reactive = available;
         this.actor.opacity = available ? 255 : 90;
         if (this.item?.gicon)
             this._icon.gicon = this.item.gicon;
         else
             this._icon.icon_name = this.item?.icon_name || this._iconName;
-        const fraction = available ? this._fraction : 0;
-        this._fill.height = Math.round(this.actor.height * fraction);
+        if (!available)
+            this._animateTo(0);
+        else if (!this._userActive)
+            this._animateTo(this._fraction);
+    }
+
+    // ---------- drawing ----------
+
+    _repaint() {
+        this._area.queue_repaint();
         // The icon sits at the bottom: dark once the white fill covers it.
-        this._icon.style_class = `liland-cc-vslider-icon${fraction > 0.2 ? ' liland-cc-vslider-icon-dark' : ''}`;
+        const covered = this._shown * this.actor.height > 25;
+        this._icon.style_class = `liland-cc-vslider-icon${covered ? ' liland-cc-vslider-icon-dark' : ''}`;
+    }
+
+    _draw(area) {
+        const cr = area.get_context();
+        const [w, h] = area.get_surface_size();
+        const r = Math.min(22, w / 2, h / 2);
+        cr.newSubPath();
+        cr.arc(w - r, r, r, -Math.PI / 2, 0);
+        cr.arc(w - r, h - r, r, 0, Math.PI / 2);
+        cr.arc(r, h - r, r, Math.PI / 2, Math.PI);
+        cr.arc(r, r, r, Math.PI, 3 * Math.PI / 2);
+        cr.closePath();
+        cr.setSourceRGBA(1, 1, 1, this.actor.hover && this.actor.reactive ? 0.17 : 0.12);
+        cr.fillPreserve();
+        cr.clip();
+        const fill = h * clamp01(this._shown);
+        cr.rectangle(0, h - fill, w, fill);
+        cr.setSourceRGBA(1, 1, 1, 1);
+        cr.fill();
+        cr.$dispose();
+    }
+
+    _show(fraction) {
+        this._stopAnimation();
+        this._shown = clamp01(fraction);
+        this._repaint();
+    }
+
+    _animateTo(fraction) {
+        fraction = clamp01(fraction);
+        if (Math.abs(fraction - this._shown) < 0.002 || !this.actor.mapped) {
+            this._show(fraction);
+            return;
+        }
+        this._stopAnimation();
+        const from = this._shown;
+        const start = GLib.get_monotonic_time();
+        this._animId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 16, () => {
+            const t = clamp01((GLib.get_monotonic_time() - start) / (SLIDER_ANIM_MS * 1000));
+            const eased = 1 - Math.pow(1 - t, 3);
+            this._shown = from + (fraction - from) * eased;
+            this._repaint();
+            if (t < 1)
+                return GLib.SOURCE_CONTINUE;
+            this._animId = 0;
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _stopAnimation() {
+        if (this._animId)
+            GLib.source_remove(this._animId);
+        this._animId = 0;
+    }
+
+    // ---------- changing the level ----------
+
+    // The user picked a level: show it now, send it to GNOME (coalesced).
+    _set(fraction, {animate = false} = {}) {
+        fraction = clamp01(fraction);
+        if (animate)
+            this._animateTo(fraction);
+        else
+            this._show(fraction);
+        this._pending = fraction;
+        if (!this._writeId) {
+            this._flush();
+            this._writeId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, SLIDER_WRITE_INTERVAL, () => {
+                if (this._pending === null) {
+                    this._writeId = 0;
+                    return GLib.SOURCE_REMOVE;
+                }
+                this._flush();
+                return GLib.SOURCE_CONTINUE;
+            });
+        }
+        // Ignore GNOME's (late) echo until things settle, then show its level.
+        if (this._settleId)
+            GLib.source_remove(this._settleId);
+        this._settleId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, SLIDER_SETTLE_MS, () => {
+            this._settleId = 0;
+            if (!this._grab)
+                this._sync();
+            return GLib.SOURCE_REMOVE;
+        });
+    }
+
+    _flush() {
+        const slider = this._slider;
+        if (this._pending === null || !slider)
+            return;
+        if (this._pending !== this._written)
+            slider.value = this._pending * slider.maximum_value;
+        this._written = this._pending;
+        this._pending = null;
+    }
+
+    _clearTimers() {
+        for (const name of ['_writeId', '_settleId']) {
+            if (this[name])
+                GLib.source_remove(this[name]);
+            this[name] = 0;
+        }
+        this._pending = null;
+        this._written = null;
     }
 
     _fractionAt(y) {
@@ -255,19 +452,19 @@ class VerticalSlider extends Mirror {
         this._grab = global.stage.grab(this.actor);
         this._dragSlider = this._slider;
         this._dragSlider?.emit('drag-begin');
-        this._setFraction(this._fractionAt(event.get_coords()[1]));
+        this._set(this._fractionAt(event.get_coords()[1]), {animate: true});
         return Clutter.EVENT_STOP;
     }
 
     _drag(event) {
         if (!this._grab)
             return Clutter.EVENT_PROPAGATE;
-        // The release went somewhere else: stop without changing the value.
+        // The release went somewhere else: stop.
         if (!(event.get_state() & Clutter.ModifierType.BUTTON1_MASK)) {
             this._endDrag();
             return Clutter.EVENT_PROPAGATE;
         }
-        this._setFraction(this._fractionAt(event.get_coords()[1]));
+        this._set(this._fractionAt(event.get_coords()[1]));
         return Clutter.EVENT_STOP;
     }
 
@@ -283,6 +480,8 @@ class VerticalSlider extends Mirror {
             return;
         this._grab.dismiss();
         this._grab = null;
+        // The last level goes out before GNOME hears the drag ended.
+        this._flush();
         this._dragSlider?.emit('drag-end');
         this._dragSlider = null;
     }
@@ -297,11 +496,13 @@ class VerticalSlider extends Mirror {
             delta = -SCROLL_STEP;
         if (!delta || !this.actor.reactive)
             return Clutter.EVENT_PROPAGATE;
-        this._setFraction(this._fraction + delta);
+        this._set(this._target + delta, {animate: true});
         return Clutter.EVENT_STOP;
     }
 
     _scroll(event) {
+        if (!this.actor.reactive)
+            return Clutter.EVENT_PROPAGATE;
         const direction = event.get_scroll_direction();
         let delta = 0;
         if (direction === Clutter.ScrollDirection.UP)
@@ -311,8 +512,16 @@ class VerticalSlider extends Mirror {
         else if (direction === Clutter.ScrollDirection.SMOOTH)
             delta = -event.get_scroll_delta()[1] * SCROLL_STEP;
         if (delta)
-            this._setFraction(this._fraction + delta);
+            this._set(this._target + delta, {animate: true});
         return Clutter.EVENT_STOP;
+    }
+
+    // Where steps (scroll, keys) start from: the user's last level while
+    // they're at it, GNOME's otherwise.
+    get _target() {
+        if (this._userActive)
+            return this._pending ?? this._written ?? this._shown;
+        return this._fraction;
     }
 }
 
@@ -485,10 +694,11 @@ export class ControlCenter {
             x_expand: true,
             y_expand: true,
         });
+        const details = toggle => this._openDetails(toggle);
         const round = [
             new RoundToggle(item('_rfkill'), {iconName: 'airplane-mode-symbolic', color: 'orange', label: _('Airplane Mode')}),
-            new RoundToggle(item('_network', named('NMWirelessToggle')), {iconName: 'network-wireless-symbolic', color: 'blue', label: _('Wi-Fi')}),
-            new RoundToggle(item('_bluetooth'), {iconName: 'bluetooth-active-symbolic', color: 'blue', label: _('Bluetooth')}),
+            new RoundToggle(item('_network', named('NMWirelessToggle')), {iconName: 'network-wireless-symbolic', color: 'blue', label: _('Wi-Fi'), onDetails: details}),
+            new RoundToggle(item('_bluetooth'), {iconName: 'bluetooth-active-symbolic', color: 'blue', label: _('Bluetooth'), onDetails: details}),
             new RoundToggle(item('_nightLight'), {iconName: 'night-light-symbolic', color: 'orange', label: _('Night Light')}),
         ];
         round.forEach((r, i) => connectivity.layout_manager.attach(mirror(r), i % 2, Math.floor(i / 2), 1, 1));
@@ -556,6 +766,7 @@ export class ControlCenter {
                 for (const m of [...this._mirrors, this._media])
                     m.bind();
             } else {
+                this._cancelDetails();
                 for (const m of [...this._mirrors, this._media])
                     m.unbind();
                 this._showNative(false);
@@ -569,7 +780,51 @@ export class ControlCenter {
         fn();
     }
 
+    // A connectivity button's list (Wi-Fi networks, Bluetooth devices): GNOME's
+    // own, shown over GNOME's grid inside the island ("‹ Control Center"
+    // comes back). Turned on first if it's off, like iOS.
+    _openDetails(toggle) {
+        this._cancelDetails();
+        const open = () => {
+            this._showNative(true);
+            toggle.menu.open(true);
+        };
+        if (toggle.menuEnabled) {
+            open();
+            return;
+        }
+        if (!toggle.checked)
+            activateItem(toggle);
+        // Its list becomes available once it's on (and has found something).
+        const id = toggle.connect('notify::menu-enabled', () => {
+            if (!toggle.menuEnabled)
+                return;
+            this._cancelDetails();
+            if (this._menu.isOpen)
+                open();
+        });
+        const timeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, 3000, () => {
+            this._detailsWait = null;
+            toggle.disconnect(id);
+            return GLib.SOURCE_REMOVE;
+        });
+        this._detailsWait = {toggle, id, timeoutId};
+    }
+
+    _cancelDetails() {
+        if (!this._detailsWait)
+            return;
+        const {toggle, id, timeoutId} = this._detailsWait;
+        this._detailsWait = null;
+        toggle.disconnect(id);
+        GLib.source_remove(timeoutId);
+    }
+
     _showNative(native) {
+        if (!native) {
+            // Back from a list: close it with GNOME's grid.
+            this._menu._activeMenu?.close(false);
+        }
         this._menu._grid.visible = native;
         this._grid.visible = !native;
         this._back.visible = native;
@@ -579,6 +834,7 @@ export class ControlCenter {
         if (!this.actor)
             return;
         this._menu.disconnect(this._openId);
+        this._cancelDetails();
         for (const id of this._actionIds)
             this._actions.disconnect(id);
         for (const m of [...this._mirrors, this._media])
